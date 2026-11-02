@@ -24,11 +24,51 @@ connectDB().then(async () => {
         fullName: 'System Administrator',
         role: 'admin',
       });
-      console.log('🔑 [Auth] Default admin account initialized: admin / adminpassword123');
+      console.log('[Auth] Default admin account initialized: admin / adminpassword123');
     }
   } catch (err) {
     console.warn('[Auth Init]:', err.message);
   }
+
+  // ── Background Scheduling Engine ─────────────────────────────────────────
+  // Runs every 30 seconds to automatically transition notice statuses:
+  //   scheduled → active  (when scheduledFor <= now)
+  //   active    → expired (when expiresAt    <= now)
+  // This fires independently of any HTTP request, so scheduling/expiry
+  // always works — even when no browser is open.
+  const Notice = require('./models/Notice');
+
+  const runScheduler = async () => {
+    try {
+      const now = new Date();
+
+      // 1. Activate scheduled notices whose time has arrived (not yet expired)
+      const activated = await Notice.updateMany(
+        { status: 'scheduled', scheduledFor: { $lte: now }, expiresAt: { $gt: now } },
+        { $set: { status: 'active' } }
+      );
+
+      // 2. Expire any active/scheduled notices that are past their expiresAt
+      const expired = await Notice.updateMany(
+        { status: { $in: ['active', 'scheduled'] }, expiresAt: { $lte: now } },
+        { $set: { status: 'expired' } }
+      );
+
+      if (activated.modifiedCount > 0 || expired.modifiedCount > 0) {
+        console.log(
+          `[Scheduler] ${activated.modifiedCount} notice(s) activated, ` +
+          `${expired.modifiedCount} notice(s) expired at ${now.toISOString()}`
+        );
+      }
+    } catch (err) {
+      console.error('[Scheduler] Error during status refresh:', err.message);
+    }
+  };
+
+  // Run once immediately on startup, then every 30 seconds
+  runScheduler();
+  setInterval(runScheduler, 30 * 1000);
+  console.log('[Scheduler] Notice status engine started (30s interval).');
 });
 
 // Middleware
@@ -76,8 +116,8 @@ app.use((err, req, res, next) => {
 // Start Server
 app.listen(PORT, () => {
   console.log(`===============================================`);
-  console.log(`🚀 BLE Smart Notice Board Server running on port ${PORT}`);
-  console.log(`📡 API Endpoints available at http://localhost:${PORT}/api`);
+  console.log(`BLE Smart Notice Board Server running on port ${PORT}`);
+  console.log(`API Endpoints available at http://localhost:${PORT}/api`);
   console.log(`===============================================`);
 });
 

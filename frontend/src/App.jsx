@@ -85,8 +85,16 @@ export default function App() {
       if (noticesRes.success) {
         setNotices(noticesRes.data);
         if (noticesRes.data.length > 0) {
-          const activeOnes = noticesRes.data.filter((n) => n.status === 'active');
-          setActiveNotice(activeOnes.length > 0 ? activeOnes[0] : noticesRes.data[0]);
+          const now = new Date();
+          const activeOnes = noticesRes.data.filter(
+            (n) =>
+              n.status === 'active' &&
+              (!n.scheduledFor || new Date(n.scheduledFor) <= now) &&
+              (!n.expiresAt || new Date(n.expiresAt) > now)
+          );
+          setActiveNotice(activeOnes.length > 0 ? activeOnes[0] : null);
+        } else {
+          setActiveNotice(null);
         }
       }
 
@@ -102,6 +110,10 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
+    // Auto-refresh every 30s so scheduled->active and active->expired transitions
+    // appear in the UI without requiring a manual page reload.
+    const pollInterval = setInterval(fetchData, 30 * 1000);
+    return () => clearInterval(pollInterval);
   }, []);
 
   // BLE Handlers
@@ -232,8 +244,18 @@ export default function App() {
         if (noticeToDelete) {
           try {
             await ble.deleteNoticeFromBoard(noticeToDelete.title);
+            // Also sync remaining active notices to ensure OLED display matches exactly
+            const remainingActive = notices.filter(
+              (n) =>
+                n._id !== id &&
+                n.status === 'active' &&
+                (!n.scheduledFor || new Date(n.scheduledFor) <= new Date()) &&
+                (!n.expiresAt || new Date(n.expiresAt) > new Date())
+            );
+            if (bleState.isConnected) {
+              await ble.syncAllNotices(remainingActive);
+            }
           } catch (bleErr) {
-            // BLE error is non-fatal — board will sync on next reconnect
             console.warn('[BLE] Delete from board failed:', bleErr.message);
           }
         }
@@ -252,7 +274,13 @@ export default function App() {
   };
 
   // Active notices list for OLED mirror
-  const activeNotices = notices.filter((n) => n.status === 'active');
+  const nowTime = new Date();
+  const activeNotices = notices.filter(
+    (n) =>
+      n.status === 'active' &&
+      (!n.scheduledFor || new Date(n.scheduledFor) <= nowTime) &&
+      (!n.expiresAt || new Date(n.expiresAt) > nowTime)
+  );
 
   return (
     <div className="app-root">

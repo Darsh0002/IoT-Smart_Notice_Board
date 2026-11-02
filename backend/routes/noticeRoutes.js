@@ -6,17 +6,21 @@ const { protect } = require('../middleware/auth');
 
 // Helper to auto-update scheduled and expired notices based on current time
 const refreshNoticeStatuses = async () => {
-  const now = new Date();
-  // 1. Activate scheduled notices whose time has arrived
-  await Notice.updateMany(
-    { scheduledFor: { $lte: now }, expiresAt: { $gt: now }, status: 'scheduled' },
-    { status: 'active' }
-  );
-  // 2. Mark past notices as expired
-  await Notice.updateMany(
-    { expiresAt: { $lt: now }, status: { $in: ['active', 'scheduled'] } },
-    { status: 'expired' }
-  );
+  try {
+    const now = new Date();
+    // 1. Activate scheduled notices whose time has arrived (not yet expired)
+    await Notice.updateMany(
+      { scheduledFor: { $lte: now }, expiresAt: { $gt: now }, status: 'scheduled' },
+      { $set: { status: 'active' } }
+    );
+    // 2. Mark past notices as expired
+    await Notice.updateMany(
+      { expiresAt: { $lte: now }, status: { $in: ['active', 'scheduled'] } },
+      { $set: { status: 'expired' } }
+    );
+  } catch (err) {
+    console.error('[Notice Status Refresh Error]:', err.message);
+  }
 };
 
 // @route   GET /api/notices
@@ -44,14 +48,28 @@ router.get('/', async (req, res) => {
       ];
     }
 
-    const notices = await Notice.find(query)
+    let notices = await Notice.find(query)
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
 
+    // Dynamic verification fallback: ensure returned status always matches current time
+    const now = new Date();
+    const processedNotices = notices.map((n) => {
+      const doc = n.toObject();
+      if (doc.expiresAt && new Date(doc.expiresAt) <= now && doc.status !== 'archived') {
+        doc.status = 'expired';
+      } else if (doc.scheduledFor && new Date(doc.scheduledFor) > now && doc.status !== 'archived') {
+        doc.status = 'scheduled';
+      } else if (doc.status !== 'archived' && doc.status !== 'expired') {
+        doc.status = 'active';
+      }
+      return doc;
+    });
+
     res.json({
       success: true,
-      count: notices.length,
-      data: notices,
+      count: processedNotices.length,
+      data: processedNotices,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -123,8 +141,13 @@ router.post('/', protect, async (req, res) => {
     const scheduleDate = scheduledFor ? new Date(scheduledFor) : now;
     const expiryDate = expiresAt ? new Date(expiresAt) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    // Initial status determined by scheduleDate
-    const initialStatus = scheduleDate > now ? 'scheduled' : 'active';
+    // Initial status determined by scheduleDate and expiryDate
+    let initialStatus = 'active';
+    if (expiryDate <= now) {
+      initialStatus = 'expired';
+    } else if (scheduleDate > now) {
+      initialStatus = 'scheduled';
+    }
 
     const notice = await Notice.create({
       title,

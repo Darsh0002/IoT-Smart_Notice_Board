@@ -605,7 +605,18 @@ void setup() {
 
   BLEAdvertising* pAdv = BLEDevice::getAdvertising();
   pAdv->addServiceUUID(SERVICE_UUID);
-  pAdv->setScanResponse(true);
+
+  // Set explicit advertisement data (Flags + Service UUID) - fits within 31 bytes
+  BLEAdvertisementData oAdvData;
+  oAdvData.setFlags(0x06); // BR_EDR_NOT_SUPPORTED | LE General Discoverable
+  oAdvData.setCompleteServices(BLEUUID(SERVICE_UUID));
+  pAdv->setAdvertisementData(oAdvData);
+
+  // Set explicit scan response data (Full Device Name) - fits within 31 bytes
+  BLEAdvertisementData oScanRespData;
+  oScanRespData.setName("ESP32-Smart-Notice-Board");
+  pAdv->setScanResponseData(oScanRespData);
+
   pAdv->setMinPreferred(0x06);
   pAdv->setMinPreferred(0x12);
   BLEDevice::startAdvertising();

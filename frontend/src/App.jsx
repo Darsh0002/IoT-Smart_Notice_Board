@@ -117,15 +117,19 @@ export default function App() {
   }, []);
 
   // BLE Handlers
-  const handleConnectPhysical = async () => {
+  const handleConnectPhysical = async (options = {}) => {
     try {
-      await ble.connectPhysical();
+      await ble.connectPhysical(options);
       showToast('Connected to ESP32 via Web Bluetooth!', 'success');
       if (activeNotice) {
         await ble.sendNotice(activeNotice);
       }
     } catch (err) {
-      showToast(`Bluetooth Error: ${err.message}`, 'error');
+      if (err.name === 'NotFoundError' || err.message?.includes('User cancelled')) {
+        showToast('Pairing cancelled. If your ESP32 did not appear, verify it is powered on and Bluetooth is enabled.', 'warning');
+      } else {
+        showToast(`Bluetooth Error: ${err.message}`, 'error');
+      }
     }
   };
 

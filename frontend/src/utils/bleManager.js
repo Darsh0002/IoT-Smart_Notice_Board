@@ -59,16 +59,34 @@ export class BLEManager {
   }
 
   // ─── CONNECT PHYSICAL ──────────────────────────────────────────────────────
-  async connectPhysical() {
+  async connectPhysical(options = {}) {
     if (!this.isSupported()) {
-      throw new Error('Web Bluetooth is not supported. Use Chrome/Edge or enable Virtual Simulator.');
+      throw new Error('Web Bluetooth is not supported. Please use Google Chrome or Microsoft Edge.');
     }
     try {
-      this.addLog('info', 'Scanning for ESP32 BLE devices...');
-      this.device = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'ESP32' }, { name: 'ESP32-Smart-Notice-Board' }],
-        optionalServices: [SERVICE_UUID],
-      });
+      this.addLog(
+        'info',
+        options.acceptAll
+          ? 'Scanning for all nearby Bluetooth devices...'
+          : 'Scanning for ESP32 BLE Notice Board...'
+      );
+
+      // Support discovery by Service UUID, Device Name, or Accept All Devices fallback
+      const reqOptions = options.acceptAll
+        ? {
+            acceptAllDevices: true,
+            optionalServices: [SERVICE_UUID],
+          }
+        : {
+            filters: [
+              { services: [SERVICE_UUID] },
+              { name: 'ESP32-Smart-Notice-Board' },
+              { namePrefix: 'ESP32' },
+            ],
+            optionalServices: [SERVICE_UUID],
+          };
+
+      this.device = await navigator.bluetooth.requestDevice(reqOptions);
 
       this.device.addEventListener('gattserverdisconnected', () => {
         this.handleDisconnect('Hardware device disconnected');
@@ -90,11 +108,15 @@ export class BLEManager {
 
       this.isConnected = true;
       this.isSimulated = false;
-      this.addLog('success', `Connected to ${this.device.name}! Ready to send notices.`);
+      this.addLog('success', `Connected to ${this.device.name || 'ESP32 Board'}! Ready to send notices.`);
       this.notifyStateChange();
       return true;
     } catch (err) {
-      this.addLog('error', `BLE Connection failed: ${err.message}`);
+      if (err.name === 'NotFoundError' || err.message?.includes('User cancelled')) {
+        this.addLog('warning', 'Device chooser was closed without selecting a device.');
+      } else {
+        this.addLog('error', `BLE Connection failed: ${err.message}`);
+      }
       throw err;
     }
   }

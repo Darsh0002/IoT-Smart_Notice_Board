@@ -128,7 +128,21 @@ export const Navbar = ({
                     <Bluetooth size={16} className="text-blue" />
                     <div>
                       <div className="font-semibold text-xs">Web Bluetooth (Hardware)</div>
-                      <div className="text-xxs text-muted">Pair physical ESP32 device</div>
+                      <div className="text-xxs text-muted">Pair physical ESP32 notice board</div>
+                    </div>
+                  </div>
+
+                  <div
+                    className="dropdown-item"
+                    onClick={() => {
+                      setShowBleMenu(false);
+                      onConnectPhysical({ acceptAll: true });
+                    }}
+                  >
+                    <Radio size={16} className="text-amber" />
+                    <div>
+                      <div className="font-semibold text-xs">Scan All BLE Devices (Fallback)</div>
+                      <div className="text-xxs text-muted">Show all nearby devices if ESP32 is filtered</div>
                     </div>
                   </div>
 

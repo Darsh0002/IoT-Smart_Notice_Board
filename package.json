@@ -1,0 +1,14 @@
+{
+  "name": "bluetooth-smart-notice-board",
+  "version": "1.0.0",
+  "description": "IoT BLE Smart Notice Board with MERN stack, ESP32, and OLED Display",
+  "scripts": {
+    "backend": "cd backend && npm run dev",
+    "backend:start": "cd backend && npm start",
+    "frontend": "cd frontend && npm run dev",
+    "frontend:build": "cd frontend && npm run build"
+  },
+  "keywords": ["esp32", "bluetooth", "ble", "oled", "react", "nodejs", "express", "mongodb", "iot"],
+  "author": "PDEU IoT Notice Board Team",
+  "license": "MIT"
+}

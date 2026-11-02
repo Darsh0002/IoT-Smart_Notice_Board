@@ -14,7 +14,6 @@ export class BLEManager {
     this.logs = [];
   }
 
-  // Subscribe to state changes
   subscribe(callback) {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);
@@ -32,37 +31,42 @@ export class BLEManager {
   }
 
   addLog(type, message, details = null) {
-    const logEntry = {
+    const entry = {
       id: Date.now() + Math.random(),
       timestamp: new Date().toLocaleTimeString(),
-      type, // 'info', 'success', 'warning', 'error', 'ble-tx', 'ble-rx'
+      type,
       message,
       details,
     };
-    this.logs.unshift(logEntry);
+    this.logs.unshift(entry);
     if (this.logs.length > 50) this.logs.pop();
     this.notifyStateChange();
   }
 
-  // Check if Web Bluetooth API is supported in browser
   isSupported() {
     return typeof navigator !== 'undefined' && 'bluetooth' in navigator;
   }
 
-  // Connect to Physical ESP32 via Native Web Bluetooth
+  // ─── WRITE HELPER ──────────────────────────────────────────────────────────
+  async _write(payloadStr) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(payloadStr);
+    if (this.characteristic.writeValueWithResponse) {
+      await this.characteristic.writeValueWithResponse(data);
+    } else {
+      await this.characteristic.writeValue(data);
+    }
+  }
+
+  // ─── CONNECT PHYSICAL ──────────────────────────────────────────────────────
   async connectPhysical() {
     if (!this.isSupported()) {
-      throw new Error('Web Bluetooth is not supported in this browser. Please use Chrome, Edge, or enable Virtual Simulator.');
+      throw new Error('Web Bluetooth is not supported. Use Chrome/Edge or enable Virtual Simulator.');
     }
-
     try {
-      this.addLog('info', 'Scanning for ESP32 Bluetooth Low Energy devices...');
-
+      this.addLog('info', 'Scanning for ESP32 BLE devices...');
       this.device = await navigator.bluetooth.requestDevice({
-        filters: [
-          { namePrefix: 'ESP32' },
-          { name: 'ESP32-Smart-Notice-Board' },
-        ],
+        filters: [{ namePrefix: 'ESP32' }, { name: 'ESP32-Smart-Notice-Board' }],
         optionalServices: [SERVICE_UUID],
       });
 
@@ -70,58 +74,49 @@ export class BLEManager {
         this.handleDisconnect('Hardware device disconnected');
       });
 
-      this.addLog('info', `Pairing with device: ${this.device.name || 'ESP32 Notice Board'}...`);
-
+      this.addLog('info', `Pairing with ${this.device.name || 'ESP32 Notice Board'}...`);
       this.server = await this.device.gatt.connect();
-      this.addLog('info', 'GATT Server connected. Discovering Notice Service...');
-
+      this.addLog('info', 'GATT connected. Discovering service...');
       this.service = await this.server.getPrimaryService(SERVICE_UUID);
       this.characteristic = await this.service.getCharacteristic(CHARACTERISTIC_UUID);
 
-      // Try starting notifications if supported
       try {
         await this.characteristic.startNotifications();
         this.characteristic.addEventListener('characteristicvaluechanged', (e) => {
-          const decoder = new TextDecoder();
-          const value = decoder.decode(e.target.value);
-          this.addLog('ble-rx', `ESP32 ACK Received: ${value}`);
+          const value = new TextDecoder().decode(e.target.value);
+          this.addLog('ble-rx', `ESP32 ACK: ${value}`);
         });
-      } catch (notifyErr) {
-        console.warn('Notifications not supported or enabled:', notifyErr);
-      }
+      } catch (e) { /* notifications optional */ }
 
       this.isConnected = true;
       this.isSimulated = false;
-      this.addLog('success', `Connected successfully to ${this.device.name}! Ready to send notices.`);
+      this.addLog('success', `Connected to ${this.device.name}! Ready to send notices.`);
       this.notifyStateChange();
       return true;
-    } catch (error) {
-      this.addLog('error', `BLE Connection failed: ${error.message}`);
-      throw error;
+    } catch (err) {
+      this.addLog('error', `BLE Connection failed: ${err.message}`);
+      throw err;
     }
   }
 
-  // Connect to Virtual ESP32 Simulator
+  // ─── CONNECT VIRTUAL ───────────────────────────────────────────────────────
   async connectVirtual(deviceName = 'ESP32-Virtual-Board-01') {
-    this.addLog('info', `Initializing Virtual ESP32 BLE link with ${deviceName}...`);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-
+    this.addLog('info', `Initializing Virtual ESP32 link: ${deviceName}...`);
+    await new Promise((r) => setTimeout(r, 600));
     this.device = {
       name: deviceName,
       id: 'VIRTUAL-ESP32-' + Math.random().toString(36).substring(2, 6).toUpperCase(),
     };
     this.isConnected = true;
     this.isSimulated = true;
-    this.addLog('success', `Connected to Virtual ESP32 (${deviceName}) with 128x64 OLED simulation!`);
+    this.addLog('success', `Connected to Virtual ESP32 (${deviceName}) — OLED mirror active!`);
     this.notifyStateChange();
     return true;
   }
 
-  // Disconnect
+  // ─── DISCONNECT ────────────────────────────────────────────────────────────
   disconnect() {
-    if (this.device && this.device.gatt && this.device.gatt.connected) {
-      this.device.gatt.disconnect();
-    }
+    if (this.device?.gatt?.connected) this.device.gatt.disconnect();
     this.handleDisconnect('User disconnected from BLE');
   }
 
@@ -135,10 +130,10 @@ export class BLEManager {
     this.notifyStateChange();
   }
 
-  // Transmit Notice payload to ESP32 (Single notice add/update)
+  // ─── SEND SINGLE NOTICE (add / update) ────────────────────────────────────
   async sendNotice(notice) {
     if (!this.isConnected) {
-      throw new Error('No Bluetooth device connected. Please connect to ESP32 first.');
+      throw new Error('No Bluetooth device connected.');
     }
 
     const payload = JSON.stringify({
@@ -150,104 +145,119 @@ export class BLEManager {
       timestamp: Date.now(),
     });
 
-    const byteLength = new TextEncoder().encode(payload).length;
-    this.addLog('ble-tx', `Transmitting notice packet (${byteLength} bytes) to ESP32...`, payload);
+    const byteLen = new TextEncoder().encode(payload).length;
+    this.addLog('ble-tx', `Sending notice (${byteLen}B) to ESP32...`, payload);
 
     if (this.isSimulated) {
-      // Simulate real BLE transmission latency
-      await new Promise((resolve) => setTimeout(resolve, 450));
-      this.addLog('ble-rx', `ESP32 ACK Received: ACK:NOTICE_UPDATED (Priority stack updated)`);
-      return { success: true, simulated: true, bytesSent: byteLength };
+      await new Promise((r) => setTimeout(r, 400));
+      this.addLog('ble-rx', 'ESP32 ACK: ACK:NOTICE_UPDATED');
+      return { success: true, simulated: true };
     }
 
-    // Physical BLE transmission
     try {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(payload);
-
-      if (this.characteristic.writeValueWithResponse) {
-        await this.characteristic.writeValueWithResponse(data);
-      } else {
-        await this.characteristic.writeValue(data);
-      }
-
-      this.addLog('success', `Notice packet successfully written to ESP32 characteristic!`);
-      return { success: true, simulated: false, bytesSent: byteLength };
+      await this._write(payload);
+      this.addLog('success', 'Notice transmitted to ESP32!');
+      return { success: true, simulated: false };
     } catch (err) {
-      this.addLog('error', `Failed to send BLE packet: ${err.message}`);
+      this.addLog('error', `Failed to send notice: ${err.message}`);
       throw err;
     }
   }
 
-  // Transmit multiple active notices to ESP32 priority stack (Batch sync)
+  // ─── SYNC ALL (Full replace — delete-aware) ────────────────────────────────
+  // Sends the ENTIRE current active notice list to the board.
+  // Board replaces its contents exactly — deleted notices disappear from OLED,
+  // new/updated ones appear. Board persists them to NVS (survives disconnect).
   async syncAllNotices(notices) {
     if (!this.isConnected) {
-      throw new Error('No Bluetooth device connected. Please connect to ESP32 first.');
+      throw new Error('No Bluetooth device connected.');
     }
 
-    // Sort by priority (Urgent > Important > Normal) and limit to top 4
     const weights = { Urgent: 3, Important: 2, Normal: 1 };
-    const sorted = [...notices].sort((a, b) => (weights[b.priority] || 1) - (weights[a.priority] || 1));
-    const topNotices = sorted.slice(0, 4).map((n) => ({
-      title: n.title,
-      content: n.content,
-      priority: n.priority || 'Normal',
-      category: n.category || 'General',
-      scrollSpeed: n.scrollSpeed || 'Medium',
-    }));
+    const sorted = [...notices]
+      .sort((a, b) => (weights[b.priority] || 1) - (weights[a.priority] || 1))
+      .slice(0, 4)
+      .map((n) => ({
+        title: n.title,
+        content: n.content,
+        priority: n.priority || 'Normal',
+        category: n.category || 'General',
+        scrollSpeed: n.scrollSpeed || 'Medium',
+      }));
 
     const payload = JSON.stringify({
       action: 'sync',
-      notices: topNotices,
+      notices: sorted,
       timestamp: Date.now(),
     });
 
-    const byteLength = new TextEncoder().encode(payload).length;
-    this.addLog('ble-tx', `Syncing ${topNotices.length} notices (${byteLength} bytes) to ESP32 priority stack...`, payload);
+    const byteLen = new TextEncoder().encode(payload).length;
+    this.addLog('ble-tx', `Syncing ${sorted.length} notice(s) to ESP32 (${byteLen}B)...`, payload);
 
     if (this.isSimulated) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      this.addLog('ble-rx', `ESP32 ACK Received: ACK:SYNC_COMPLETE (${topNotices.length} notices synced on OLED)`);
-      return { success: true, simulated: true, count: topNotices.length, bytesSent: byteLength };
+      await new Promise((r) => setTimeout(r, 500));
+      this.addLog('ble-rx', `ESP32 ACK: ACK:SYNC_OK (${sorted.length} notices → OLED priority stack)`);
+      return { success: true, simulated: true, count: sorted.length };
     }
 
     try {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(payload);
-
-      if (this.characteristic.writeValueWithResponse) {
-        await this.characteristic.writeValueWithResponse(data);
-      } else {
-        await this.characteristic.writeValue(data);
-      }
-
-      this.addLog('success', `Successfully synced ${topNotices.length} notices to ESP32 priority display!`);
-      return { success: true, simulated: false, count: topNotices.length, bytesSent: byteLength };
+      await this._write(payload);
+      this.addLog('success', `Synced ${sorted.length} notice(s) to ESP32 OLED priority display!`);
+      return { success: true, simulated: false, count: sorted.length };
     } catch (err) {
-      this.addLog('error', `Failed to sync notices to ESP32: ${err.message}`);
+      this.addLog('error', `Sync failed: ${err.message}`);
       throw err;
     }
   }
 
-  // Clear Notice from board
-  async clearNotice() {
-    if (!this.isConnected) return;
-    const clearPayload = JSON.stringify({ action: 'clear' });
-    this.addLog('ble-tx', 'Sending CLEAR command to ESP32 OLED...');
+  // ─── DELETE ONE NOTICE from ESP32 OLED ────────────────────────────────────
+  // Sends a targeted delete command so only that one notice is removed from
+  // the OLED without disturbing the rest of the priority stack.
+  async deleteNoticeFromBoard(title) {
+    if (!this.isConnected) {
+      // Not connected → board will sync on next reconnect (NVS reflects DB)
+      this.addLog('info', `BLE not connected — notice "${title}" will be removed on next board sync.`);
+      return { success: false, offline: true };
+    }
+
+    const payload = JSON.stringify({ action: 'delete', title });
+    const byteLen = new TextEncoder().encode(payload).length;
+    this.addLog('ble-tx', `Deleting "${title}" from ESP32 board (${byteLen}B)...`);
 
     if (this.isSimulated) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      this.addLog('ble-rx', 'ESP32 ACK Received: ACK:CLEARED');
+      await new Promise((r) => setTimeout(r, 300));
+      this.addLog('ble-rx', `ESP32 ACK: ACK:DELETED ("${title}" removed from OLED)`);
+      return { success: true, simulated: true };
+    }
+
+    try {
+      await this._write(payload);
+      this.addLog('success', `"${title}" removed from ESP32 OLED board.`);
+      return { success: true, simulated: false };
+    } catch (err) {
+      this.addLog('error', `Delete command failed: ${err.message}`);
+      throw err;
+    }
+  }
+
+  // ─── CLEAR ALL NOTICES ─────────────────────────────────────────────────────
+  async clearNotice() {
+    if (!this.isConnected) return;
+    const payload = JSON.stringify({ action: 'clear' });
+    this.addLog('ble-tx', 'Sending CLEAR ALL to ESP32...');
+
+    if (this.isSimulated) {
+      await new Promise((r) => setTimeout(r, 300));
+      this.addLog('ble-rx', 'ESP32 ACK: ACK:CLEARED');
       return true;
     }
 
     try {
-      const encoder = new TextEncoder();
-      await this.characteristic.writeValue(encoder.encode(clearPayload));
-      this.addLog('success', 'Board cleared successfully.');
+      await this._write(payload);
+      this.addLog('success', 'ESP32 board cleared successfully.');
       return true;
     } catch (err) {
-      this.addLog('error', `Failed to send clear command: ${err.message}`);
+      this.addLog('error', `Clear command failed: ${err.message}`);
       throw err;
     }
   }

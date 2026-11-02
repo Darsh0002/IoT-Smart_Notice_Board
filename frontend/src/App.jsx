@@ -222,8 +222,24 @@ export default function App() {
 
     if (window.confirm('Are you sure you want to delete this notice?')) {
       try {
+        // Find the notice title BEFORE deleting (needed for BLE delete command)
+        const noticeToDelete = notices.find((n) => n._id === id);
+
+        // 1. Delete from database
         await api.deleteNotice(id);
-        showToast('Notice deleted successfully', 'info');
+
+        // 2. Remove from ESP32 OLED board via BLE (if connected)
+        if (noticeToDelete) {
+          try {
+            await ble.deleteNoticeFromBoard(noticeToDelete.title);
+          } catch (bleErr) {
+            // BLE error is non-fatal — board will sync on next reconnect
+            console.warn('[BLE] Delete from board failed:', bleErr.message);
+          }
+        }
+
+        showToast('Notice deleted from database and ESP32 board!', 'info');
+
         if (activeNotice?._id === id) {
           const remaining = notices.filter((n) => n._id !== id);
           setActiveNotice(remaining.length > 0 ? remaining[0] : null);

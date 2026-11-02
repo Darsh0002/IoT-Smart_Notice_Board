@@ -108,6 +108,9 @@ export default function App() {
     }
   };
 
+  // Track previous notice statuses so we can detect transitions
+  const prevNoticesRef = React.useRef([]);
+
   useEffect(() => {
     fetchData();
     // Auto-refresh every 30s so scheduled->active and active->expired transitions
@@ -121,8 +124,18 @@ export default function App() {
     try {
       await ble.connectPhysical(options);
       showToast('Connected to ESP32 via Web Bluetooth!', 'success');
-      if (activeNotice) {
-        await ble.sendNotice(activeNotice);
+      // On connect: immediately sync ALL currently active notices to the board
+      // so hardware OLED reflects exactly what is on the web portal right now.
+      const nowTs = new Date();
+      const currentActive = notices.filter(
+        (n) =>
+          n.status === 'active' &&
+          (!n.scheduledFor || new Date(n.scheduledFor) <= nowTs) &&
+          (!n.expiresAt || new Date(n.expiresAt) > nowTs)
+      );
+      if (currentActive.length > 0) {
+        await ble.syncAllNotices(currentActive);
+        showToast(`Synced ${Math.min(currentActive.length, 4)} notice(s) to ESP32 OLED`, 'success');
       }
     } catch (err) {
       if (err.name === 'NotFoundError' || err.message?.includes('User cancelled')) {
@@ -191,6 +204,48 @@ export default function App() {
     }
   };
 
+
+  // ── BLE Auto-Sync on Scheduling / Expiry Transitions ──────────────────────
+  // Whenever the notices array changes (from the 30s poll or manual fetch),
+  // detect transitions and push the updated active list to the hardware board.
+  useEffect(() => {
+    const prev = prevNoticesRef.current;
+    if (prev.length === 0 && notices.length === 0) return; // initial empty state
+
+    const nowTs = new Date();
+    const isActive = (n) =>
+      n.status === 'active' &&
+      (!n.scheduledFor || new Date(n.scheduledFor) <= nowTs) &&
+      (!n.expiresAt || new Date(n.expiresAt) > nowTs);
+
+    const currentActive = notices.filter(isActive);
+    const prevActive = prev.filter(isActive);
+
+    // Did any notice become active (scheduled -> active) or get removed (expired)?
+    const currentIds = new Set(currentActive.map((n) => n._id));
+    const prevIds = new Set(prevActive.map((n) => n._id));
+
+    const added   = currentActive.filter((n) => !prevIds.has(n._id));
+    const removed = prevActive.filter((n) => !currentIds.has(n._id));
+
+    if ((added.length > 0 || removed.length > 0) && bleState.isConnected) {
+      // Push the full updated active list to the board
+      ble.syncAllNotices(currentActive)
+        .then(() => {
+          if (added.length > 0) {
+            const titles = added.map((n) => n.title).join(', ');
+            showToast(`Scheduled notice(s) now live on OLED: ${titles}`, 'success');
+          }
+          if (removed.length > 0) {
+            const titles = removed.map((n) => n.title).join(', ');
+            showToast(`Expired notice(s) removed from OLED: ${titles}`, 'info');
+          }
+        })
+        .catch((e) => console.warn('[BLE] Auto transition sync failed:', e.message));
+    }
+
+    prevNoticesRef.current = notices;
+  }, [notices]);
   // Notice CRUD handlers
   const handleSaveNotice = async (noticeData, sendDirectly) => {
     if (!user) {
@@ -222,7 +277,26 @@ export default function App() {
       setEditNoticeData(null);
       await fetchData();
 
-      if (sendDirectly && savedNotice.status === 'active') {
+      // If notice is active right now AND BLE is connected, push to board immediately
+      if (savedNotice.status === 'active' && bleState.isConnected) {
+        try {
+          // Fetch freshest active list from state (fetchData just ran above)
+          const nowTs2 = new Date();
+          const freshActive = notices.filter(
+            (n) =>
+              n.status === 'active' &&
+              (!n.scheduledFor || new Date(n.scheduledFor) <= nowTs2) &&
+              (!n.expiresAt || new Date(n.expiresAt) > nowTs2)
+          );
+          // Include the newly saved notice if it wasn't in the array yet
+          const inList = freshActive.some((n) => n._id === savedNotice._id);
+          const syncList = inList ? freshActive : [...freshActive, savedNotice];
+          await ble.syncAllNotices(syncList);
+          showToast('Notice pushed to ESP32 OLED board!', 'success');
+        } catch (bleErr) {
+          console.warn('[BLE] Auto-sync after save failed:', bleErr.message);
+        }
+      } else if (sendDirectly && savedNotice.status === 'active') {
         handleDisplayOnBoard(savedNotice);
       }
     } catch (err) {

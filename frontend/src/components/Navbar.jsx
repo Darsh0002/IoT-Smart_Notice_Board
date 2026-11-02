@@ -132,19 +132,6 @@ export const Navbar = ({
                     </div>
                   </div>
 
-                  <div
-                    className="dropdown-item"
-                    onClick={() => {
-                      setShowBleMenu(false);
-                      onConnectPhysical({ acceptAll: true });
-                    }}
-                  >
-                    <Radio size={16} className="text-amber" />
-                    <div>
-                      <div className="font-semibold text-xs">Scan All BLE Devices (Fallback)</div>
-                      <div className="text-xxs text-muted">Show all nearby devices if ESP32 is filtered</div>
-                    </div>
-                  </div>
 
                   <div
                     className="dropdown-item"

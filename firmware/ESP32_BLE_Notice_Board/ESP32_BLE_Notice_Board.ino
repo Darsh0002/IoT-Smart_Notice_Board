@@ -1,25 +1,30 @@
 /*
  * ===================================================================================
- *  Bluetooth SMART NOTICE BOARD - ESP32 Firmware v4
- *  SSD1306 OLED 128x64 | Multi-Line Priority Stack | LEDC PWM Buzzer (5s Beep-Beep)
- *  Delete-aware BLE sync | Disconnect Persistence | Clean UI (No Dummy Notices)
+ *  Bluetooth SMART NOTICE BOARD - ESP32 Firmware v5
+ *  SSD1306 OLED 128x64 | Header + Priority Stack | LEDC PWM Buzzer (5s Beep-Beep)
+ *  Delete-aware BLE sync | Disconnect Persistence | NVS Flash Storage
  * ===================================================================================
  *  Hardware:
  *    - ESP32-WROOM-32 / NodeMCU ESP32
- *    - 0.96" SSD1306 OLED 128×64  (I2C 0x3C, SDA=GPIO21, SCL=GPIO22)
- *    - Green LED  (GPIO 25 → 330Ω → LED → GND)  : BLE Connected
- *    - Red   LED  (GPIO 26 → 330Ω → LED → GND)  : Urgent Notice Active
- *    - Buzzer     (GPIO 27 → Buzzer+ , Buzzer- → GND) : Driven via ESP32 LEDC PWM
+ *    - 0.96" SSD1306 OLED 128x64  (I2C 0x3C, SDA=GPIO21, SCL=GPIO22)
+ *    - Green LED  (GPIO 25 -> 330Ohm -> LED -> GND)  : BLE Connected
+ *    - Red   LED  (GPIO 26 -> 330Ohm -> LED -> GND)  : Urgent Notice Active
+ *    - Buzzer     (GPIO 27 -> Buzzer+, Buzzer- -> GND): Driven via ESP32 LEDC PWM
  *
- *  Buzzer Alert:
- *    - Uses ledcAttach() and ledcWriteTone()
- *    - When an Urgent notice is active: Crisp "Beep-Beep" (2700Hz) every 5 seconds
- *    - When notice is cleared/deleted: Immediately silenced
+ *  OLED Layout:
+ *    Line 1 (y=0..11):  "Smart Notice Board" header (inverted bar, always shown)
+ *    Separator line at y=12
+ *    Lines 2+ (y=13..63): Notice rows (up to 4), each with priority badge + scrolling text
+ *    When no notices: "No Active Notices" centered in the notice area
  *
- *  OLED Display:
- *    - Clean multi-line priority stack (Urgent at top -> Important -> Normal)
- *    - No dummy notice and no "SMART NOTICE BOARD" title line
- *    - Full 64px display dedicated to notice rows with independent side-scrolling
+ *  NVS Persistence:
+ *    - All notices are saved to NVS flash on every add/update/delete/sync
+ *    - On power-on or BLE disconnect: notices restore from NVS and stay on screen
+ *    - On BLE reconnect: portal pushes a fresh sync which replaces NVS content
+ *
+ *  Buzzer:
+ *    - Uses ledcAttach() and ledcWriteTone() (ESP32 Arduino v3 API)
+ *    - Urgent notice active: double-beep (2700 Hz) every 5 seconds, non-blocking
  * ===================================================================================
  */
 
@@ -47,6 +52,13 @@
 #define SCREEN_HEIGHT  64
 #define OLED_RESET     -1
 #define OLED_ADDRESS   0x3C
+
+// Header occupies y=0..11 (12 pixels), separator at y=12
+// Notice area starts at y=14 (50 pixels available for notices)
+#define HEADER_H       12
+#define SEP_Y          12
+#define NOTICE_AREA_Y  14
+#define NOTICE_AREA_H  (SCREEN_HEIGHT - NOTICE_AREA_Y)  // 50px
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
@@ -92,15 +104,10 @@ bool          urgentBlink   = false;
 // ═══════════════════════════════════════════════════════════
 //  BUZZER ENGINE — LEDC PWM TONE (Double-Beep every 5 sec)
 // ═══════════════════════════════════════════════════════════
-const int           BUZZER_FREQ        = 2700; // 2700 Hz: resonant peak for loud clear alert
-const unsigned long BUZZER_INTERVAL_MS = 5000; // 5-second interval
+const int           BUZZER_FREQ        = 2700;
+const unsigned long BUZZER_INTERVAL_MS = 5000;
 unsigned long       lastBuzzerCycle    = 0;
 int                 buzzerPhase        = 0;
-// Phase: 0 = idle/wait
-//        1 = Beep 1 ON (100ms)
-//        2 = Gap OFF   (80ms)
-//        3 = Beep 2 ON (100ms)
-//        4 = Silent wait for 5s cycle completion
 
 void buzzerStop() {
   ledcWriteTone(PIN_BUZZER, 0);
@@ -109,54 +116,42 @@ void buzzerStop() {
 
 void updateBuzzer() {
   if (!urgentActive) {
-    if (buzzerPhase != 0) {
-      buzzerStop();
-    }
+    if (buzzerPhase != 0) buzzerStop();
     return;
   }
 
-  unsigned long now     = millis();
-  unsigned long elapsed = now - lastBuzzerCycle;
+  unsigned long now = millis();
 
   switch (buzzerPhase) {
     case 0:
-      // Waiting for next 5-second cycle
-      if (elapsed >= BUZZER_INTERVAL_MS) {
+      if (now - lastBuzzerCycle >= BUZZER_INTERVAL_MS) {
         lastBuzzerCycle = now;
-        ledcWriteTone(PIN_BUZZER, BUZZER_FREQ); // Beep 1 ON
+        ledcWriteTone(PIN_BUZZER, BUZZER_FREQ);
         buzzerPhase = 1;
       }
       break;
-
     case 1:
-      // Beep 1 duration: 100ms
       if (now - lastBuzzerCycle >= 100) {
-        ledcWriteTone(PIN_BUZZER, 0);            // Beep 1 OFF (gap)
+        ledcWriteTone(PIN_BUZZER, 0);
         buzzerPhase = 2;
       }
       break;
-
     case 2:
-      // Gap duration: 80ms (100 + 80 = 180ms)
       if (now - lastBuzzerCycle >= 180) {
-        ledcWriteTone(PIN_BUZZER, BUZZER_FREQ); // Beep 2 ON
+        ledcWriteTone(PIN_BUZZER, BUZZER_FREQ);
         buzzerPhase = 3;
       }
       break;
-
     case 3:
-      // Beep 2 duration: 100ms (180 + 100 = 280ms)
       if (now - lastBuzzerCycle >= 280) {
-        ledcWriteTone(PIN_BUZZER, 0);            // Beep 2 OFF
+        ledcWriteTone(PIN_BUZZER, 0);
         buzzerPhase = 4;
       }
       break;
-
     case 4:
-      // Silent for remainder of the 5-sec cycle
       if (now - lastBuzzerCycle >= BUZZER_INTERVAL_MS) {
         lastBuzzerCycle = now;
-        ledcWriteTone(PIN_BUZZER, BUZZER_FREQ); // Next cycle Beep 1 ON
+        ledcWriteTone(PIN_BUZZER, BUZZER_FREQ);
         buzzerPhase = 1;
       }
       break;
@@ -185,18 +180,12 @@ void saveNoticesToNVS();
 void refreshUrgentState() {
   bool wasUrgent = urgentActive;
   urgentActive = false;
-
   for (int i = 0; i < noticeCount; i++) {
-    if (notices[i].priority == "Urgent") {
-      urgentActive = true;
-      break;
-    }
+    if (notices[i].priority == "Urgent") { urgentActive = true; break; }
   }
-
   if (urgentActive) {
     redLedOn();
     if (!wasUrgent) {
-      // Fire buzzer immediately on new urgent notice
       lastBuzzerCycle = millis() - BUZZER_INTERVAL_MS;
       buzzerPhase     = 0;
       Serial.println("[ALERT] Urgent notice active — 5s Beep-Beep loop started.");
@@ -204,7 +193,7 @@ void refreshUrgentState() {
   } else {
     redLedOff();
     buzzerStop();
-    Serial.println("[ALERT] No urgent notices — Buzzer silenced and Red LED off.");
+    Serial.println("[ALERT] No urgent notices — Buzzer silenced.");
   }
 }
 
@@ -230,10 +219,9 @@ void addOrUpdateNotice(const String& title, const String& content,
   for (int i = 0; i < noticeCount; i++) {
     if (notices[i].title == title) { idx = i; break; }
   }
-
   if      (idx != -1)                 { /* update in-place */ }
   else if (noticeCount < MAX_NOTICES) { idx = noticeCount++; }
-  else                                { idx = MAX_NOTICES - 1; }   // replace lowest
+  else                                { idx = MAX_NOTICES - 1; }
 
   notices[idx].title          = title;
   notices[idx].message        = content;
@@ -251,9 +239,7 @@ void addOrUpdateNotice(const String& title, const String& content,
 bool removeNoticeByTitle(const String& title) {
   for (int i = 0; i < noticeCount; i++) {
     if (notices[i].title == title) {
-      for (int j = i; j < noticeCount - 1; j++) {
-        notices[j] = notices[j + 1];
-      }
+      for (int j = i; j < noticeCount - 1; j++) notices[j] = notices[j + 1];
       noticeCount--;
       sortNotices();
       saveNoticesToNVS();
@@ -266,10 +252,8 @@ bool removeNoticeByTitle(const String& title) {
 
 void replaceAllNotices(JsonArray& arr) {
   noticeCount = 0;
-
   for (JsonObject n : arr) {
     if (noticeCount >= MAX_NOTICES) break;
-
     String t   = n["title"]    | "Notice";
     String c   = n["content"]  | "";
     String p   = n["priority"] | "Normal";
@@ -289,7 +273,6 @@ void replaceAllNotices(JsonArray& arr) {
     notices[noticeCount].textPixelWidth = (t + ": " + c).length() * 6;
     noticeCount++;
   }
-
   sortNotices();
   saveNoticesToNVS();
   Serial.println("[BLE] replaceAllNotices: board now has " + String(noticeCount) + " notice(s).");
@@ -300,18 +283,16 @@ void clearAllNotices() {
   urgentActive = false;
   buzzerStop();
   redLedOff();
-
   preferences.begin("noticeboard", false);
   preferences.clear();
   preferences.end();
-
   display.clearDisplay();
   display.display();
   Serial.println("[NVS] All notices cleared.");
 }
 
 // ═══════════════════════════════════════════════════════════
-//  NVS PERSISTENCE (Survives disconnect & reboot)
+//  NVS PERSISTENCE
 // ═══════════════════════════════════════════════════════════
 void saveNoticesToNVS() {
   preferences.begin("noticeboard", false);
@@ -332,7 +313,6 @@ void loadNoticesFromNVS() {
   preferences.begin("noticeboard", true);
   noticeCount = preferences.getInt("count", 0);
   if (noticeCount > MAX_NOTICES) noticeCount = MAX_NOTICES;
-
   for (int i = 0; i < noticeCount; i++) {
     String pfx = "n" + String(i) + "_";
     notices[i].title          = preferences.getString((pfx + "t").c_str(), "Notice");
@@ -345,8 +325,6 @@ void loadNoticesFromNVS() {
     notices[i].textPixelWidth = (notices[i].title + ": " + notices[i].message).length() * 6;
   }
   preferences.end();
-
-  // If noticeCount == 0: DO NOT add any dummy notice! Keep it 0.
   sortNotices();
   Serial.println("[NVS] Loaded " + String(noticeCount) + " notice(s) from flash.");
 }
@@ -359,12 +337,14 @@ class MyServerCallbacks : public BLEServerCallbacks {
     deviceConnected = true;
     greenLedOn();
     Serial.println("[BLE] Admin connected — Green LED ON.");
+    // Note: portal will push a full sync shortly after connection;
+    // existing NVS notices keep showing until the sync arrives.
   }
   void onDisconnect(BLEServer* pSrv) override {
     deviceConnected = false;
     greenLedOff();
-    // Keep displaying all notices from RAM/NVS on disconnect
-    Serial.println("[BLE] Admin disconnected — Green LED OFF. Notices remain on screen.");
+    // Notices remain in RAM + NVS — they keep showing after disconnect
+    Serial.println("[BLE] Admin disconnected — notices remain on screen from NVS.");
   }
 };
 
@@ -375,7 +355,6 @@ class NoticeCharacteristicCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pChar) override {
     String rxValue = pChar->getValue().c_str();
     if (rxValue.length() == 0) return;
-
     Serial.println("[BLE RX] " + rxValue.substring(0, min((int)rxValue.length(), 80)));
 
     DynamicJsonDocument doc(4096);
@@ -389,16 +368,13 @@ class NoticeCharacteristicCallbacks : public BLECharacteristicCallbacks {
 
     const char* action = doc["action"] | "";
 
-    // Clear all notices
     if (strcmp(action, "clear") == 0) {
       clearAllNotices();
       pChar->setValue("ACK:CLEARED");
       pChar->notify();
-      Serial.println("[BLE] ACK:CLEARED");
       return;
     }
 
-    // Delete single notice by title
     if (strcmp(action, "delete") == 0) {
       String delTitle = doc["title"] | "";
       if (delTitle.length() > 0) {
@@ -408,11 +384,9 @@ class NoticeCharacteristicCallbacks : public BLECharacteristicCallbacks {
         pChar->setValue("ACK:ERR_NO_TITLE");
       }
       pChar->notify();
-      Serial.println("[BLE] ACK:DELETED");
       return;
     }
 
-    // Full batch replace sync
     if (strcmp(action, "sync") == 0 && doc.containsKey("notices")) {
       JsonArray arr = doc["notices"].as<JsonArray>();
       replaceAllNotices(arr);
@@ -440,10 +414,29 @@ class NoticeCharacteristicCallbacks : public BLECharacteristicCallbacks {
 };
 
 // ═══════════════════════════════════════════════════════════
-//  OLED RENDERING — CLEAN MULTI-LINE PRIORITY STACK (128x64)
-//  (No dummy notices & No "SMART NOTICE BOARD" title line)
+//  OLED RENDERING — v5 Layout
+//  Line 1: "Smart Notice Board" header (inverted bar, y=0..11)
+//  Separator at y=12
+//  Notice rows from y=14 downward (50px for up to 4 notices)
+//  - If no notices: centered "No Active Notices" in the notice area
 // ═══════════════════════════════════════════════════════════
-void drawHRule(int y) { display.drawFastHLine(0, y, SCREEN_WIDTH, WHITE); }
+void drawHeader() {
+  // Inverted full-width bar for header
+  display.fillRect(0, 0, SCREEN_WIDTH, HEADER_H, WHITE);
+  display.setTextColor(BLACK);
+  display.setTextSize(1);
+
+  // Center "Smart Notice Board" (17 chars * 6px = 102px wide)
+  int textW = 17 * 6;  // approximate
+  int x = (SCREEN_WIDTH - textW) / 2;
+  display.setCursor(x < 0 ? 0 : x, 2);
+  display.print("Smart Notice Board");
+
+  display.setTextColor(WHITE);
+
+  // Separator line
+  display.drawFastHLine(0, SEP_Y, SCREEN_WIDTH, WHITE);
+}
 
 void renderOLED() {
   display.clearDisplay();
@@ -451,79 +444,82 @@ void renderOLED() {
 
   unsigned long now = millis();
 
-  // Blink toggle every 500 ms (for urgent badge)
+  // ── Header (always shown) ───────────────────────────────
+  drawHeader();
+
+  // ── Blink toggle every 500ms for urgent badge ───────────
   if (now - lastBlinkTime >= 500) {
     lastBlinkTime = now;
     urgentBlink   = !urgentBlink;
   }
 
-  // If no notices are present
+  // ── Notice Area ─────────────────────────────────────────
   if (noticeCount == 0) {
+    // Empty state: centered message in notice area
     display.setTextColor(WHITE);
     display.setTextSize(1);
-    display.setCursor(14, 24);
+    // "No Active Notices" = 18 chars * 6 = 108px
+    display.setCursor(10, NOTICE_AREA_Y + (NOTICE_AREA_H - 8) / 2 - 4);
     display.print("No Active Notices");
-    display.setCursor(10, 40);
-    display.print(deviceConnected ? "BLE Connected" : "Ready for BLE Sync");
-    display.display();
-    return;
-  }
+    display.setCursor(28, NOTICE_AREA_Y + (NOTICE_AREA_H - 8) / 2 + 8);
+    display.print(deviceConnected ? "BLE Connected" : "BLE Disconnected");
+  } else {
+    int rows  = min(noticeCount, MAX_NOTICES);
+    int rowH  = NOTICE_AREA_H / rows;        // height per row in notice area
+    int badgeW = 14;
+    int textX  = badgeW + 3;
+    int textW  = SCREEN_WIDTH - textX;
 
-  // When notices are present: distribute full 64px height across active rows
-  int rows   = min(noticeCount, MAX_NOTICES);
-  int rowH   = SCREEN_HEIGHT / rows;
-  int badgeW = 14;
-  int textX  = badgeW + 3;
-  int textW  = SCREEN_WIDTH - textX;
+    for (int i = 0; i < rows; i++) {
+      // Row Y offset is relative to notice area start
+      int rowBaseY = NOTICE_AREA_Y + i * rowH;
+      int rowY     = rowBaseY + (rowH - 8) / 2;  // vertically centre the 8px text
 
-  for (int i = 0; i < rows; i++) {
-    int rowY = i * rowH + (rowH - 8) / 2;
+      String fullText = notices[i].title + ": " + notices[i].message;
+      int    fPx      = notices[i].textPixelWidth;
 
-    String fullText = notices[i].title + ": " + notices[i].message;
-    int    fPx      = notices[i].textPixelWidth;
-
-    // Side scrolling text if overflowing
-    if (fPx <= textW) {
-      display.setCursor(textX, rowY);
-      display.print(fullText);
-    } else {
-      if (now - notices[i].lastScrollTime >= (unsigned long)notices[i].scrollSpeed) {
-        notices[i].lastScrollTime = now;
-        notices[i].scrollX--;
-        if (notices[i].scrollX < -(fPx + 24)) notices[i].scrollX = 0;
-      }
-      display.setCursor(textX + notices[i].scrollX, rowY);
-      display.print(fullText + "    ***    " + fullText);
-    }
-
-    // Mask badge area on the left
-    display.fillRect(0, i * rowH, badgeW + 1, rowH, BLACK);
-
-    // Draw Priority Badge on the left
-    if (notices[i].priority == "Urgent") {
-      if (!urgentBlink) {
-        display.fillRect(0, rowY - 1, badgeW, 10, WHITE);
-        display.setTextColor(BLACK);
-        display.setCursor(4, rowY);
-        display.print("!");
-        display.setTextColor(WHITE);
+      // Side-scrolling text
+      if (fPx <= textW) {
+        display.setCursor(textX, rowY);
+        display.print(fullText);
       } else {
+        if (now - notices[i].lastScrollTime >= (unsigned long)notices[i].scrollSpeed) {
+          notices[i].lastScrollTime = now;
+          notices[i].scrollX--;
+          if (notices[i].scrollX < -(fPx + 24)) notices[i].scrollX = 0;
+        }
+        display.setCursor(textX + notices[i].scrollX, rowY);
+        display.print(fullText + "    ***    " + fullText);
+      }
+
+      // Mask badge area, then draw badge
+      display.fillRect(0, rowBaseY, badgeW + 1, rowH, BLACK);
+
+      if (notices[i].priority == "Urgent") {
+        if (!urgentBlink) {
+          display.fillRect(0, rowY - 1, badgeW, 10, WHITE);
+          display.setTextColor(BLACK);
+          display.setCursor(4, rowY);
+          display.print("!");
+          display.setTextColor(WHITE);
+        } else {
+          display.drawRect(0, rowY - 1, badgeW, 10, WHITE);
+          display.setCursor(4, rowY);
+          display.print("!");
+        }
+      } else if (notices[i].priority == "Important") {
         display.drawRect(0, rowY - 1, badgeW, 10, WHITE);
         display.setCursor(4, rowY);
-        display.print("!");
+        display.print("*");
+      } else {
+        display.setCursor(4, rowY);
+        display.print("-");
       }
-    } else if (notices[i].priority == "Important") {
-      display.drawRect(0, rowY - 1, badgeW, 10, WHITE);
-      display.setCursor(4, rowY);
-      display.print("*");
-    } else {
-      display.setCursor(4, rowY);
-      display.print("-");
-    }
 
-    // Row divider line between notices
-    if (i < rows - 1) {
-      drawHRule((i + 1) * rowH - 1);
+      // Row divider (not after last row)
+      if (i < rows - 1) {
+        display.drawFastHLine(0, rowBaseY + rowH - 1, SCREEN_WIDTH, WHITE);
+      }
     }
   }
 
@@ -536,7 +532,7 @@ void renderOLED() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n=== ESP32 BLE Priority Notice Board v4 ===");
+  Serial.println("\n=== ESP32 BLE Smart Notice Board v5 ===");
 
   // GPIO init
   pinMode(PIN_LED_GREEN, OUTPUT);
@@ -544,20 +540,17 @@ void setup() {
   digitalWrite(PIN_LED_GREEN, LOW);
   digitalWrite(PIN_LED_RED,   LOW);
 
-  // Buzzer init using ESP32 LEDC PWM
+  // Buzzer init — ESP32 LEDC PWM
   ledcAttach(PIN_BUZZER, 2000, 10);
-  ledcWriteTone(PIN_BUZZER, 0); // start completely silent
+  ledcWriteTone(PIN_BUZZER, 0);
   Serial.println("[GPIO] Buzzer attached to LEDC PWM (Pin 27).");
 
-  // Boot self-test: fast double beep (100ms on, 80ms off, 100ms on) + LED flash
+  // Boot self-test beep + LED flash
   digitalWrite(PIN_LED_GREEN, HIGH);
   digitalWrite(PIN_LED_RED,   HIGH);
-  ledcWriteTone(PIN_BUZZER, BUZZER_FREQ);
-  delay(100);
-  ledcWriteTone(PIN_BUZZER, 0);
-  delay(80);
-  ledcWriteTone(PIN_BUZZER, BUZZER_FREQ);
-  delay(100);
+  ledcWriteTone(PIN_BUZZER, BUZZER_FREQ); delay(100);
+  ledcWriteTone(PIN_BUZZER, 0);           delay(80);
+  ledcWriteTone(PIN_BUZZER, BUZZER_FREQ); delay(100);
   ledcWriteTone(PIN_BUZZER, 0);
   digitalWrite(PIN_LED_GREEN, LOW);
   digitalWrite(PIN_LED_RED,   LOW);
@@ -570,9 +563,9 @@ void setup() {
     while (true) delay(3000);
   }
   display.setTextWrap(false);
-  Serial.println("[OLED] SSD1306 128×64 ready.");
+  Serial.println("[OLED] SSD1306 128x64 ready.");
 
-  // Splash Screen (Clean startup)
+  // Splash screen
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
@@ -583,7 +576,7 @@ void setup() {
   display.display();
   delay(1200);
 
-  // Load persisted notices from flash
+  // Load persisted notices from NVS flash
   loadNoticesFromNVS();
 
   // BLE init
@@ -606,13 +599,13 @@ void setup() {
   BLEAdvertising* pAdv = BLEDevice::getAdvertising();
   pAdv->addServiceUUID(SERVICE_UUID);
 
-  // Set explicit advertisement data (Flags + Service UUID) - fits within 31 bytes
+  // Advertisement packet: Flags + Service UUID (stays within 31 bytes)
   BLEAdvertisementData oAdvData;
-  oAdvData.setFlags(0x06); // BR_EDR_NOT_SUPPORTED | LE General Discoverable
+  oAdvData.setFlags(0x06);
   oAdvData.setCompleteServices(BLEUUID(SERVICE_UUID));
   pAdv->setAdvertisementData(oAdvData);
 
-  // Set explicit scan response data (Full Device Name) - fits within 31 bytes
+  // Scan response: Full device name
   BLEAdvertisementData oScanRespData;
   oScanRespData.setName("ESP32-Smart-Notice-Board");
   pAdv->setScanResponseData(oScanRespData);
@@ -627,7 +620,7 @@ void setup() {
 //  MAIN LOOP
 // ═══════════════════════════════════════════════════════════
 void loop() {
-  // Restart advertising if disconnected
+  // Restart advertising after disconnect so portal can reconnect
   if (!deviceConnected && oldDeviceConnected) {
     delay(150);
     pServer->startAdvertising();
@@ -638,9 +631,9 @@ void loop() {
     oldDeviceConnected = true;
   }
 
-  // Non-blocking 5-second interval Urgent Buzzer
+  // Non-blocking urgent buzzer state machine
   updateBuzzer();
 
-  // Render multi-line priority stack
+  // Render OLED: header + notice stack
   renderOLED();
 }

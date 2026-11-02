@@ -33,34 +33,20 @@ export const OledDisplaySimulator = ({
   const [buzzerPulsing, setBuzzerPulsing] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [scrollOffsets, setScrollOffsets] = useState([0, 0, 0, 0]);
-  const [currentTime, setCurrentTime] = useState(
-    new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  );
 
-  // Audio Context Ref for simulated 2500Hz buzzer
+  // Audio Context Ref for simulated 2700Hz buzzer
   const audioCtxRef = useRef(null);
 
   // Priority sorting helper
   const priorityRank = { Urgent: 3, Important: 2, Normal: 1 };
 
   // Prepare up to 4 active notices sorted by priority (Urgent -> Important -> Normal)
+  // No fake default notice: if empty, displayNotices is empty []
   const displayNotices = React.useMemo(() => {
     let list = [...activeNoticesList];
     if (list.length === 0 && activeNotice) {
       list = [activeNotice];
     }
-    if (list.length === 0) {
-      list = [
-        {
-          title: 'SMART NOTICE BD',
-          content: 'Awaiting BLE notices from Admin Web Portal...',
-          priority: 'Normal',
-          category: 'System',
-          scrollSpeed: 'Medium',
-        },
-      ];
-    }
-
     // Sort by priority rank descending
     return list
       .sort((a, b) => (priorityRank[b.priority] || 1) - (priorityRank[a.priority] || 1))
@@ -68,14 +54,6 @@ export const OledDisplaySimulator = ({
   }, [activeNoticesList, activeNotice]);
 
   const hasUrgent = displayNotices.some((n) => n.priority === 'Urgent');
-
-  // Clock update
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Urgent blink timer (500ms)
   useEffect(() => {
@@ -89,7 +67,7 @@ export const OledDisplaySimulator = ({
     }
   }, [hasUrgent]);
 
-  // Play simulated 2500Hz Double Warning Tone via Web Audio API
+  // Play simulated 2700Hz Double Warning Tone via Web Audio API
   const triggerBuzzerAudio = () => {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -103,29 +81,29 @@ export const OledDisplaySimulator = ({
       }
 
       const now = ctx.currentTime;
-      // Beep 1: 2500 Hz square wave, 120ms
+      // Beep 1: 2700 Hz square wave, 100ms
       const osc1 = ctx.createOscillator();
       const gain1 = ctx.createGain();
       osc1.type = 'square';
-      osc1.frequency.setValueAtTime(2500, now);
-      gain1.gain.setValueAtTime(0.08, now);
-      gain1.gain.setValueAtTime(0.0, now + 0.12);
+      osc1.frequency.setValueAtTime(2700, now);
+      gain1.gain.setValueAtTime(0.09, now);
+      gain1.gain.setValueAtTime(0.0, now + 0.10);
       osc1.connect(gain1);
       gain1.connect(ctx.destination);
       osc1.start(now);
-      osc1.stop(now + 0.12);
+      osc1.stop(now + 0.10);
 
-      // Beep 2: 2500 Hz square wave, 120ms (after 80ms gap -> offset 0.20s)
+      // Beep 2: 2700 Hz square wave, 100ms (after 80ms gap -> offset 0.18s)
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
       osc2.type = 'square';
-      osc2.frequency.setValueAtTime(2500, now + 0.20);
-      gain2.gain.setValueAtTime(0.08, now + 0.20);
-      gain2.gain.setValueAtTime(0.0, now + 0.32);
+      osc2.frequency.setValueAtTime(2700, now + 0.18);
+      gain2.gain.setValueAtTime(0.09, now + 0.18);
+      gain2.gain.setValueAtTime(0.0, now + 0.28);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
-      osc2.start(now + 0.20);
-      osc2.stop(now + 0.32);
+      osc2.start(now + 0.18);
+      osc2.stop(now + 0.28);
     } catch (err) {
       console.warn('Web Audio error:', err);
     }
@@ -145,10 +123,10 @@ export const OledDisplaySimulator = ({
       }
       setTimeout(() => {
         setBuzzerPulsing(false);
-      }, 350);
+      }, 300);
     };
 
-    // Fire immediately upon detection of urgent notice
+    // Fire immediately upon urgent notice detection
     fireDoubleBeep();
 
     // Repeat every 5000ms
@@ -158,24 +136,22 @@ export const OledDisplaySimulator = ({
 
   // Independent horizontal side-scrolling for each notice row
   useEffect(() => {
-    if (isPaused) return;
+    if (isPaused || displayNotices.length === 0) return;
 
     const interval = setInterval(() => {
       setScrollOffsets((prevOffsets) =>
         displayNotices.map((n, idx) => {
           const fullText = `${n.title}: ${n.content}`;
-          // Estimate pixel length in simulator (char width ≈ 7.5px)
           const textPixelLen = fullText.length * 7.5;
-          const visibleWidth = 230; // simulator container pixel width
+          const visibleWidth = 230; // container px width
 
           if (textPixelLen <= visibleWidth) {
-            return 0; // Short text stays static!
+            return 0; // fits statically
           }
 
           const curOffset = prevOffsets[idx] || 0;
           const speedStep = n.scrollSpeed === 'Fast' ? 2.2 : n.scrollSpeed === 'Slow' ? 1.0 : 1.5;
 
-          // Wrap around after scrolling past visible view + gap
           if (curOffset > textPixelLen + 60) {
             return -30;
           }
@@ -246,7 +222,7 @@ export const OledDisplaySimulator = ({
     timestamp: new Date().toISOString(),
     hardware: {
       oled: 'SSD1306_128x64_I2C_0x3C',
-      buzzer: 'Passive (2500Hz Double-Beep @ 5s)',
+      buzzer: 'LEDC PWM 2700Hz Double-Beep (5s interval)',
       leds: 'Green (D25 BLE), Red (D26 Urgent)',
     },
   };
@@ -258,16 +234,16 @@ export const OledDisplaySimulator = ({
         {/* Top PCB Pin Header */}
         <div className="oled-pcb-header">
           <div className="oled-pins">
-            <span className="oled-pin highlight" title="3.3V Logic Supply (ESP32 3.3V)">
+            <span className="oled-pin highlight" title="3.3V Supply">
               <span className="pin-dot"></span> VCC (3.3V)
             </span>
-            <span className="oled-pin highlight" title="Ground (ESP32 GND)">
+            <span className="oled-pin highlight" title="Ground">
               <span className="pin-dot"></span> GND
             </span>
-            <span className="oled-pin highlight" title="I2C Clock SCL (ESP32 GPIO 22)">
+            <span className="oled-pin highlight" title="I2C Clock SCL (GPIO 22)">
               <span className="pin-dot"></span> SCL (D22)
             </span>
-            <span className="oled-pin highlight" title="I2C Data SDA (ESP32 GPIO 21)">
+            <span className="oled-pin highlight" title="I2C Data SDA (GPIO 21)">
               <span className="pin-dot"></span> SDA (D21)
             </span>
           </div>
@@ -291,77 +267,67 @@ export const OledDisplaySimulator = ({
               '--oled-inv-text': activePalette.invertedText,
             }}
           >
-            {/* Scanline mesh */}
+            {/* Scanlines & Pixel Grid */}
             <div className="oled-scanlines"></div>
             <div className="oled-pixel-grid"></div>
 
-            {/* SCREEN CONTENT: MULTI-LINE PRIORITY STACK */}
+            {/* SCREEN CONTENT: Clean Multi-Line Priority Stack */}
             <div className="oled-screen-content">
-              {/* Top Status Bar (Zone 0) */}
-              <div className="oled-zone-header">
-                <span className="oled-header-priority">
-                  {hasUrgent ? (
-                    <span className={urgentBlink ? 'oled-blink-text' : ''}>[!URGENT ALERT!]</span>
-                  ) : (
-                    'SMART NOTICE BD'
-                  )}
-                </span>
-                <span className="oled-header-clock">{currentTime}</span>
-                <span className="oled-header-ble">
-                  {bleState?.isConnected ? 'BLE:ON' : 'BLE:ADV'} [{displayNotices.length}]
-                </span>
-              </div>
+              {displayNotices.length === 0 ? (
+                <div className="oled-empty-state">
+                  <div className="oled-empty-title">No Active Notices</div>
+                  <div className="oled-empty-sub">
+                    {bleState?.isConnected ? 'BLE Connected • Ready' : 'Ready for BLE Sync'}
+                  </div>
+                </div>
+              ) : (
+                <div className="oled-stack-container">
+                  {displayNotices.map((n, idx) => {
+                    const isUrgent = n.priority === 'Urgent';
+                    const isImportant = n.priority === 'Important';
+                    const fullText = `${n.title}: ${n.content}`;
+                    const offset = scrollOffsets[idx] || 0;
+                    const isScrolling = offset > 0;
 
-              {/* Divider Line */}
-              <div className="oled-divider"></div>
-
-              {/* Multi-Line Stack (1 Line per Notice, ordered by Priority) */}
-              <div className="oled-stack-container">
-                {displayNotices.map((n, idx) => {
-                  const isUrgent = n.priority === 'Urgent';
-                  const isImportant = n.priority === 'Important';
-                  const fullText = `${n.title}: ${n.content}`;
-                  const offset = scrollOffsets[idx] || 0;
-                  const isScrolling = offset > 0;
-
-                  return (
-                    <div key={idx} className="oled-stack-row">
-                      {/* Fixed Priority Badge on Left */}
-                      <div
-                        className={`oled-row-badge ${
-                          isUrgent ? 'badge-urgent' : isImportant ? 'badge-important' : 'badge-normal'
-                        }`}
-                      >
-                        {isUrgent ? (
-                          <span className={urgentBlink ? 'badge-blink' : ''}>!</span>
-                        ) : isImportant ? (
-                          '*'
-                        ) : (
-                          '-'
-                        )}
-                      </div>
-
-                      {/* Side-Scrolling Notice Text Container */}
-                      <div className="oled-row-track-container">
+                    return (
+                      <div key={idx} className="oled-stack-row">
+                        {/* Fixed Priority Badge on Left */}
                         <div
-                          className="oled-row-track"
-                          style={{
-                            transform: isScrolling ? `translateX(-${offset}px)` : 'translateX(0)',
-                          }}
+                          className={`oled-row-badge ${
+                            isUrgent ? 'badge-urgent' : isImportant ? 'badge-important' : 'badge-normal'
+                          }`}
                         >
-                          <span className="oled-row-text">{fullText}</span>
-                          {isScrolling && (
-                            <>
-                              <span className="oled-row-spacer">✦ ✦ ✦</span>
-                              <span className="oled-row-text">{fullText}</span>
-                            </>
+                          {isUrgent ? (
+                            <span className={urgentBlink ? 'badge-blink' : ''}>!</span>
+                          ) : isImportant ? (
+                            '*'
+                          ) : (
+                            '-'
                           )}
                         </div>
+
+                        {/* Side-Scrolling Notice Text */}
+                        <div className="oled-row-track-container">
+                          <div
+                            className="oled-row-track"
+                            style={{
+                              transform: isScrolling ? `translateX(-${offset}px)` : 'translateX(0)',
+                            }}
+                          >
+                            <span className="oled-row-text">{fullText}</span>
+                            {isScrolling && (
+                              <>
+                                <span className="oled-row-spacer">✦ ✦ ✦</span>
+                                <span className="oled-row-text">{fullText}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
@@ -386,17 +352,17 @@ export const OledDisplaySimulator = ({
                 <span className="oled-hw-label">D26:URG</span>
               </div>
 
-              {/* Passive Buzzer: 2500Hz Alert Indicator */}
+              {/* Buzzer: 2700Hz Alert Indicator */}
               <div
                 className={`hw-indicator ${buzzerPulsing ? 'buzzer-active' : ''}`}
-                title="GPIO 27: Passive Buzzer (2500Hz Double-Beep every 5s)"
+                title="GPIO 27: Buzzer (2700Hz Double-Beep every 5s)"
               >
                 <BellRing
                   size={11}
                   className={buzzerPulsing ? 'text-red-pulse' : hasUrgent ? 'text-amber' : 'text-muted'}
                 />
                 <span className="oled-hw-label">
-                  D27:BUZZ {buzzerPulsing ? '(2.5kHz BEEP)' : hasUrgent ? '(5s Int)' : '(OFF)'}
+                  D27:BUZZ {buzzerPulsing ? '(2.7kHz BEEP)' : hasUrgent ? '(5s Int)' : '(OFF)'}
                 </span>
               </div>
             </div>
@@ -405,7 +371,7 @@ export const OledDisplaySimulator = ({
             <button
               className={`btn-sound-toggle ${audioEnabled ? 'sound-on' : ''}`}
               onClick={() => setAudioEnabled(!audioEnabled)}
-              title={audioEnabled ? 'Mute 2500Hz Buzzer sound preview' : 'Enable 2500Hz buzzer sound preview'}
+              title={audioEnabled ? 'Mute 2700Hz Buzzer sound preview' : 'Enable 2700Hz buzzer sound preview'}
             >
               {audioEnabled ? <Volume2 size={12} /> : <VolumeX size={12} />}
               <span>{audioEnabled ? 'AUDIO ON' : 'TEST SOUND'}</span>
@@ -456,7 +422,7 @@ export const OledDisplaySimulator = ({
             <button
               className="btn-sync-all"
               onClick={onSyncAllToBoard}
-              title="Transmit all active notices to ESP32 priority stack"
+              title="Transmit active notices to ESP32 priority stack"
             >
               <Send size={12} />
               <span>Sync All to Board ({displayNotices.length})</span>
@@ -476,10 +442,10 @@ export const OledDisplaySimulator = ({
       </div>
 
       {/* Active Notice Quick Selector Chips */}
-      {activeNoticesList.length > 1 && (
+      {displayNotices.length > 0 && (
         <div className="quick-notice-selector">
           <span className="selector-label">
-            <Layers size={12} /> Active Notices ({activeNoticesList.length}):
+            <Layers size={12} /> Active Notices ({displayNotices.length}):
           </span>
           <div className="selector-chips">
             {displayNotices.map((n, idx) => (
@@ -651,59 +617,37 @@ export const OledDisplaySimulator = ({
           font-family: 'Courier New', Courier, monospace;
         }
 
-        /* Zone 0: Header */
-        .oled-zone-header {
-          background: var(--oled-inv-bg);
-          color: var(--oled-inv-text);
-          font-weight: 800;
-          font-size: 10px;
-          line-height: 1.2;
-          padding: 2px 4px;
-          border-radius: 2px;
+        /* Empty State */
+        .oled-empty-state {
           display: flex;
-          justify-content: space-between;
+          flex-direction: column;
           align-items: center;
+          justify-content: center;
+          height: 100%;
+          text-align: center;
+          gap: 6px;
+        }
+
+        .oled-empty-title {
+          font-size: 13px;
+          font-weight: 800;
+          color: var(--oled-color);
+          text-shadow: 0 0 6px var(--oled-glow);
           letter-spacing: 0.05em;
         }
 
-        .oled-header-priority {
-          font-weight: 900;
-        }
-
-        .oled-blink-text {
-          animation: textBlink 0.5s infinite;
-        }
-
-        @keyframes textBlink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.2; }
-        }
-
-        .oled-header-clock {
-          font-size: 9px;
-          font-weight: 700;
-        }
-
-        .oled-header-ble {
-          font-size: 8px;
-          font-weight: 800;
-        }
-
-        /* Divider */
-        .oled-divider {
-          height: 1px;
-          background: var(--oled-color);
-          opacity: 0.45;
-          box-shadow: 0 0 3px var(--oled-glow);
-          margin: 3px 0 4px 0;
+        .oled-empty-sub {
+          font-size: 10px;
+          color: var(--oled-dim);
+          letter-spacing: 0.04em;
         }
 
         /* Multi-Line Stack Container */
         .oled-stack-container {
           display: flex;
           flex-direction: column;
-          gap: 4px;
-          flex: 1;
+          gap: 2px;
+          height: 100%;
           justify-content: space-around;
         }
 
@@ -711,8 +655,8 @@ export const OledDisplaySimulator = ({
           display: flex;
           align-items: center;
           gap: 6px;
-          height: 26px;
-          border-bottom: 1px dashed rgba(255, 255, 255, 0.1);
+          flex: 1;
+          border-bottom: 1px dashed rgba(255, 255, 255, 0.15);
           overflow: hidden;
           position: relative;
         }
@@ -725,11 +669,11 @@ export const OledDisplaySimulator = ({
         .oled-row-badge {
           flex-shrink: 0;
           width: 18px;
-          height: 16px;
+          height: 18px;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 11px;
+          font-size: 12px;
           font-weight: 900;
           border-radius: 2px;
           z-index: 6;
@@ -738,7 +682,7 @@ export const OledDisplaySimulator = ({
         .badge-urgent {
           background: var(--oled-inv-bg);
           color: var(--oled-inv-text);
-          box-shadow: 0 0 4px var(--oled-glow);
+          box-shadow: 0 0 5px var(--oled-glow);
         }
 
         .badge-important {
@@ -748,11 +692,16 @@ export const OledDisplaySimulator = ({
 
         .badge-normal {
           color: var(--oled-dim);
-          border: 1px solid rgba(255, 255, 255, 0.15);
+          border: 1px solid rgba(255, 255, 255, 0.2);
         }
 
         .badge-blink {
           animation: textBlink 0.5s infinite;
+        }
+
+        @keyframes textBlink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.2; }
         }
 
         /* Horizontal Track Container */

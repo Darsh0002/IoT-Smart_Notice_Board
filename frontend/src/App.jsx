@@ -153,6 +153,28 @@ export default function App() {
     }
   };
 
+  // Sync all active notices to ESP32 in Priority Stack Order
+  const handleSyncAllToBoard = async () => {
+    if (activeNotices.length === 0) {
+      showToast('No active notices to display', 'info');
+      return;
+    }
+    if (bleState.isConnected) {
+      try {
+        const res = await ble.syncAllNotices(activeNotices);
+        showToast(
+          `Synced ${res.count || Math.min(activeNotices.length, 4)} notices to ESP32 priority display!`,
+          'success'
+        );
+        fetchData();
+      } catch (err) {
+        showToast(`Sync failed: ${err.message}`, 'error');
+      }
+    } else {
+      showToast('Simulated priority stack on OLED mirror. Connect BLE to sync hardware!', 'info');
+    }
+  };
+
   // Notice CRUD handlers
   const handleSaveNotice = async (noticeData, sendDirectly) => {
     if (!user) {
@@ -321,6 +343,7 @@ export default function App() {
                         activeNotice={activeNotice}
                         bleState={bleState}
                         onSendToBoard={handleDisplayOnBoard}
+                        onSyncAllToBoard={handleSyncAllToBoard}
                         activeNoticesList={activeNotices}
                       />
 

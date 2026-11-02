@@ -135,7 +135,7 @@ export class BLEManager {
     this.notifyStateChange();
   }
 
-  // Transmit Notice payload to ESP32
+  // Transmit Notice payload to ESP32 (Single notice add/update)
   async sendNotice(notice) {
     if (!this.isConnected) {
       throw new Error('No Bluetooth device connected. Please connect to ESP32 first.');
@@ -151,12 +151,12 @@ export class BLEManager {
     });
 
     const byteLength = new TextEncoder().encode(payload).length;
-    this.addLog('ble-tx', `Transmitting packet (${byteLength} bytes) to ESP32...`, payload);
+    this.addLog('ble-tx', `Transmitting notice packet (${byteLength} bytes) to ESP32...`, payload);
 
     if (this.isSimulated) {
       // Simulate real BLE transmission latency
       await new Promise((resolve) => setTimeout(resolve, 450));
-      this.addLog('ble-rx', `ESP32 ACK Received: ACK:NOTICE_UPDATED (NVS Flash memory synced)`);
+      this.addLog('ble-rx', `ESP32 ACK Received: ACK:NOTICE_UPDATED (Priority stack updated)`);
       return { success: true, simulated: true, bytesSent: byteLength };
     }
 
@@ -165,7 +165,6 @@ export class BLEManager {
       const encoder = new TextEncoder();
       const data = encoder.encode(payload);
 
-      // Most BLE devices support up to 512 bytes with MTU negotiation, but fallback to chunks if necessary
       if (this.characteristic.writeValueWithResponse) {
         await this.characteristic.writeValueWithResponse(data);
       } else {
@@ -176,6 +175,56 @@ export class BLEManager {
       return { success: true, simulated: false, bytesSent: byteLength };
     } catch (err) {
       this.addLog('error', `Failed to send BLE packet: ${err.message}`);
+      throw err;
+    }
+  }
+
+  // Transmit multiple active notices to ESP32 priority stack (Batch sync)
+  async syncAllNotices(notices) {
+    if (!this.isConnected) {
+      throw new Error('No Bluetooth device connected. Please connect to ESP32 first.');
+    }
+
+    // Sort by priority (Urgent > Important > Normal) and limit to top 4
+    const weights = { Urgent: 3, Important: 2, Normal: 1 };
+    const sorted = [...notices].sort((a, b) => (weights[b.priority] || 1) - (weights[a.priority] || 1));
+    const topNotices = sorted.slice(0, 4).map((n) => ({
+      title: n.title,
+      content: n.content,
+      priority: n.priority || 'Normal',
+      category: n.category || 'General',
+      scrollSpeed: n.scrollSpeed || 'Medium',
+    }));
+
+    const payload = JSON.stringify({
+      action: 'sync',
+      notices: topNotices,
+      timestamp: Date.now(),
+    });
+
+    const byteLength = new TextEncoder().encode(payload).length;
+    this.addLog('ble-tx', `Syncing ${topNotices.length} notices (${byteLength} bytes) to ESP32 priority stack...`, payload);
+
+    if (this.isSimulated) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      this.addLog('ble-rx', `ESP32 ACK Received: ACK:SYNC_COMPLETE (${topNotices.length} notices synced on OLED)`);
+      return { success: true, simulated: true, count: topNotices.length, bytesSent: byteLength };
+    }
+
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(payload);
+
+      if (this.characteristic.writeValueWithResponse) {
+        await this.characteristic.writeValueWithResponse(data);
+      } else {
+        await this.characteristic.writeValue(data);
+      }
+
+      this.addLog('success', `Successfully synced ${topNotices.length} notices to ESP32 priority display!`);
+      return { success: true, simulated: false, count: topNotices.length, bytesSent: byteLength };
+    } catch (err) {
+      this.addLog('error', `Failed to sync notices to ESP32: ${err.message}`);
       throw err;
     }
   }

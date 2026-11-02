@@ -12,34 +12,62 @@ import {
   Radio,
   Clock,
   Wifi,
+  Volume2,
+  VolumeX,
+  BellRing,
+  Send,
 } from 'lucide-react';
 
 export const OledDisplaySimulator = ({
   activeNotice,
   bleState,
   onSendToBoard,
+  onSyncAllToBoard,
   activeNoticesList = [],
 }) => {
   // Theme state: cyan (classic OLED), amber, emerald, white
   const [theme, setTheme] = useState('cyan'); // 'cyan' | 'amber' | 'emerald' | 'white'
   const [isPaused, setIsPaused] = useState(false);
-  const [scrollOffset, setScrollOffset] = useState(0);
   const [showPacketInspector, setShowPacketInspector] = useState(false);
   const [urgentBlink, setUrgentBlink] = useState(false);
-  const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  const [buzzerPulsing, setBuzzerPulsing] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [scrollOffsets, setScrollOffsets] = useState([0, 0, 0, 0]);
+  const [currentTime, setCurrentTime] = useState(
+    new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  );
 
-  // References
-  const animationFrameRef = useRef(null);
-  const lastTickRef = useRef(Date.now());
+  // Audio Context Ref for simulated 2500Hz buzzer
+  const audioCtxRef = useRef(null);
 
-  // Current notice defaults
-  const notice = activeNotice || {
-    title: 'SMART NOTICE BD',
-    content: 'Awaiting BLE transmission from Admin Web Portal. Pair via Web Bluetooth to push live campus notices.',
-    priority: 'Normal',
-    category: 'System',
-    scrollSpeed: 'Medium',
-  };
+  // Priority sorting helper
+  const priorityRank = { Urgent: 3, Important: 2, Normal: 1 };
+
+  // Prepare up to 4 active notices sorted by priority (Urgent -> Important -> Normal)
+  const displayNotices = React.useMemo(() => {
+    let list = [...activeNoticesList];
+    if (list.length === 0 && activeNotice) {
+      list = [activeNotice];
+    }
+    if (list.length === 0) {
+      list = [
+        {
+          title: 'SMART NOTICE BD',
+          content: 'Awaiting BLE notices from Admin Web Portal...',
+          priority: 'Normal',
+          category: 'System',
+          scrollSpeed: 'Medium',
+        },
+      ];
+    }
+
+    // Sort by priority rank descending
+    return list
+      .sort((a, b) => (priorityRank[b.priority] || 1) - (priorityRank[a.priority] || 1))
+      .slice(0, 4);
+  }, [activeNoticesList, activeNotice]);
+
+  const hasUrgent = displayNotices.some((n) => n.priority === 'Urgent');
 
   // Clock update
   useEffect(() => {
@@ -49,41 +77,115 @@ export const OledDisplaySimulator = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Urgent title blink effect
+  // Urgent blink timer (500ms)
   useEffect(() => {
-    if (notice.priority === 'Urgent') {
+    if (hasUrgent) {
       const interval = setInterval(() => {
         setUrgentBlink((prev) => !prev);
-      }, 600);
+      }, 500);
       return () => clearInterval(interval);
     } else {
       setUrgentBlink(false);
     }
-  }, [notice.priority]);
+  }, [hasUrgent]);
 
-  // Pixel scroll animation
-  useEffect(() => {
-    // Determine speed delay: Fast=18px/s, Medium=32px/s, Slow=50px/s (or pixel step)
-    const speedMs = notice.scrollSpeed === 'Fast' ? 22 : notice.scrollSpeed === 'Slow' ? 55 : 35;
-    
-    // Reset offset on notice change
-    setScrollOffset(0);
-
-    const scrollInterval = setInterval(() => {
-      if (!isPaused) {
-        setScrollOffset((prev) => {
-          // Wrap around after full text has scrolled
-          const maxScroll = (notice.content.length * 8.5) + 240;
-          if (prev > maxScroll) {
-            return -220; // reset to right side
-          }
-          return prev + 1.5;
-        });
+  // Play simulated 2500Hz Double Warning Tone via Web Audio API
+  const triggerBuzzerAudio = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioCtx();
       }
-    }, speedMs);
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
 
-    return () => clearInterval(scrollInterval);
-  }, [notice.content, notice.scrollSpeed, isPaused]);
+      const now = ctx.currentTime;
+      // Beep 1: 2500 Hz square wave, 120ms
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'square';
+      osc1.frequency.setValueAtTime(2500, now);
+      gain1.gain.setValueAtTime(0.08, now);
+      gain1.gain.setValueAtTime(0.0, now + 0.12);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.12);
+
+      // Beep 2: 2500 Hz square wave, 120ms (after 80ms gap -> offset 0.20s)
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'square';
+      osc2.frequency.setValueAtTime(2500, now + 0.20);
+      gain2.gain.setValueAtTime(0.08, now + 0.20);
+      gain2.gain.setValueAtTime(0.0, now + 0.32);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.20);
+      osc2.stop(now + 0.32);
+    } catch (err) {
+      console.warn('Web Audio error:', err);
+    }
+  };
+
+  // 5-Second Interval Urgent Buzzer Loop
+  useEffect(() => {
+    if (!hasUrgent) {
+      setBuzzerPulsing(false);
+      return;
+    }
+
+    const fireDoubleBeep = () => {
+      setBuzzerPulsing(true);
+      if (audioEnabled) {
+        triggerBuzzerAudio();
+      }
+      setTimeout(() => {
+        setBuzzerPulsing(false);
+      }, 350);
+    };
+
+    // Fire immediately upon detection of urgent notice
+    fireDoubleBeep();
+
+    // Repeat every 5000ms
+    const interval = setInterval(fireDoubleBeep, 5000);
+    return () => clearInterval(interval);
+  }, [hasUrgent, audioEnabled]);
+
+  // Independent horizontal side-scrolling for each notice row
+  useEffect(() => {
+    if (isPaused) return;
+
+    const interval = setInterval(() => {
+      setScrollOffsets((prevOffsets) =>
+        displayNotices.map((n, idx) => {
+          const fullText = `${n.title}: ${n.content}`;
+          // Estimate pixel length in simulator (char width ≈ 7.5px)
+          const textPixelLen = fullText.length * 7.5;
+          const visibleWidth = 230; // simulator container pixel width
+
+          if (textPixelLen <= visibleWidth) {
+            return 0; // Short text stays static!
+          }
+
+          const curOffset = prevOffsets[idx] || 0;
+          const speedStep = n.scrollSpeed === 'Fast' ? 2.2 : n.scrollSpeed === 'Slow' ? 1.0 : 1.5;
+
+          // Wrap around after scrolling past visible view + gap
+          if (curOffset > textPixelLen + 60) {
+            return -30;
+          }
+          return curOffset + speedStep;
+        })
+      );
+    }, 32);
+
+    return () => clearInterval(interval);
+  }, [displayNotices, isPaused]);
 
   // Color themes definition
   const themes = {
@@ -131,22 +233,28 @@ export const OledDisplaySimulator = ({
 
   const activePalette = themes[theme] || themes.cyan;
 
-  // JSON payload structure representing what ESP32 receives over GATT
+  // JSON payload preview for BLE inspector
   const gattPacketPreview = {
-    title: notice.title,
-    content: notice.content,
-    priority: notice.priority || 'Normal',
-    category: notice.category || 'General',
-    scrollSpeed: notice.scrollSpeed || 'Medium',
+    action: 'sync',
+    count: displayNotices.length,
+    notices: displayNotices.map((n) => ({
+      title: n.title,
+      content: n.content,
+      priority: n.priority,
+      category: n.category || 'General',
+    })),
     timestamp: new Date().toISOString(),
-    display: 'SSD1306_128x64_I2C',
-    i2c_address: '0x3C',
+    hardware: {
+      oled: 'SSD1306_128x64_I2C_0x3C',
+      buzzer: 'Passive (2500Hz Double-Beep @ 5s)',
+      leds: 'Green (D25 BLE), Red (D26 Urgent)',
+    },
   };
 
   return (
     <div className="oled-simulator-wrapper">
       {/* Hardware Chassis */}
-      <div className="oled-hardware-frame">
+      <div className={`oled-hardware-frame ${buzzerPulsing ? 'buzzer-pulsing-frame' : ''}`}>
         {/* Top PCB Pin Header */}
         <div className="oled-pcb-header">
           <div className="oled-pins">
@@ -183,94 +291,133 @@ export const OledDisplaySimulator = ({
               '--oled-inv-text': activePalette.invertedText,
             }}
           >
-            {/* CRT / Pixel Scanline Mesh Overlay */}
+            {/* Scanline mesh */}
             <div className="oled-scanlines"></div>
             <div className="oled-pixel-grid"></div>
 
-            {/* SCREEN CONTENT ZONES */}
+            {/* SCREEN CONTENT: MULTI-LINE PRIORITY STACK */}
             <div className="oled-screen-content">
-              {/* Zone 0: Inverted Header Bar (10px) */}
+              {/* Top Status Bar (Zone 0) */}
               <div className="oled-zone-header">
                 <span className="oled-header-priority">
-                  {notice.priority === 'Urgent'
-                    ? '[!URGENT]'
-                    : notice.priority === 'Important'
-                    ? '[IMP]'
-                    : '[INFO]'}
+                  {hasUrgent ? (
+                    <span className={urgentBlink ? 'oled-blink-text' : ''}>[!URGENT ALERT!]</span>
+                  ) : (
+                    'SMART NOTICE BD'
+                  )}
                 </span>
                 <span className="oled-header-clock">{currentTime}</span>
                 <span className="oled-header-ble">
-                  {bleState?.isConnected ? 'BLE:CONNECTED' : 'BLE:ADV'}
+                  {bleState?.isConnected ? 'BLE:ON' : 'BLE:ADV'} [{displayNotices.length}]
                 </span>
               </div>
 
-              {/* Zone 1: Notice Title (12-22px) */}
-              <div className="oled-zone-title">
-                {notice.priority === 'Urgent' && urgentBlink ? (
-                  <span className="oled-urgent-blink">*** {notice.title.toUpperCase()} ***</span>
-                ) : (
-                  <span className="oled-title-text">{notice.title}</span>
-                )}
-              </div>
-
-              {/* Zone 2: Horizontal Divider Rule */}
+              {/* Divider Line */}
               <div className="oled-divider"></div>
 
-              {/* Zone 3: Smooth Pixel Marquee Ticker (24px) */}
-              <div className="oled-zone-marquee">
-                <div
-                  className="oled-marquee-track"
-                  style={{
-                    transform: `translateX(${-scrollOffset}px)`,
-                  }}
-                >
-                  <span className="oled-marquee-text">{notice.content}</span>
-                  <span className="oled-marquee-spacer">✦ ✦ ✦</span>
-                  <span className="oled-marquee-text">{notice.content}</span>
-                </div>
-              </div>
+              {/* Multi-Line Stack (1 Line per Notice, ordered by Priority) */}
+              <div className="oled-stack-container">
+                {displayNotices.map((n, idx) => {
+                  const isUrgent = n.priority === 'Urgent';
+                  const isImportant = n.priority === 'Important';
+                  const fullText = `${n.title}: ${n.content}`;
+                  const offset = scrollOffsets[idx] || 0;
+                  const isScrolling = offset > 0;
 
-              {/* Zone 4: Divider Rule */}
-              <div className="oled-divider"></div>
+                  return (
+                    <div key={idx} className="oled-stack-row">
+                      {/* Fixed Priority Badge on Left */}
+                      <div
+                        className={`oled-row-badge ${
+                          isUrgent ? 'badge-urgent' : isImportant ? 'badge-important' : 'badge-normal'
+                        }`}
+                      >
+                        {isUrgent ? (
+                          <span className={urgentBlink ? 'badge-blink' : ''}>!</span>
+                        ) : isImportant ? (
+                          '*'
+                        ) : (
+                          '-'
+                        )}
+                      </div>
 
-              {/* Zone 5: Status Footer Bar (12px) */}
-              <div className="oled-zone-footer">
-                <span className="oled-footer-cat">
-                  {notice.category || 'General'}
-                </span>
-                <span className="oled-footer-speed">
-                  SPD: {notice.scrollSpeed === 'Fast' ? 'F' : notice.scrollSpeed === 'Slow' ? 'S' : 'M'}
-                </span>
-                <span className="oled-footer-res">128×64 px</span>
+                      {/* Side-Scrolling Notice Text Container */}
+                      <div className="oled-row-track-container">
+                        <div
+                          className="oled-row-track"
+                          style={{
+                            transform: isScrolling ? `translateX(-${offset}px)` : 'translateX(0)',
+                          }}
+                        >
+                          <span className="oled-row-text">{fullText}</span>
+                          {isScrolling && (
+                            <>
+                              <span className="oled-row-spacer">✦ ✦ ✦</span>
+                              <span className="oled-row-text">{fullText}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
 
-          {/* Bezel Bottom Labels */}
+          {/* Bezel Bottom Status & Hardware LED / Buzzer Indicators */}
           <div className="oled-bezel-footer">
             <div className="oled-status-left">
-              <span
-                className={`oled-indicator-led ${
-                  bleState?.isConnected ? 'active' : 'idle'
-                }`}
-              ></span>
-              <span className="oled-hw-label">
-                {bleState?.isConnected
-                  ? bleState.isSimulated
-                    ? 'VIRTUAL OLED MIRROR'
-                    : 'HARDWARE LINKED'
-                  : 'STANDBY (0x3C)'}
-              </span>
+              {/* Green LED: BLE Connected */}
+              <div className="hw-indicator" title="GPIO 25: Green LED (BLE Connection)">
+                <span
+                  className={`oled-indicator-led led-green ${
+                    bleState?.isConnected ? 'active' : 'idle'
+                  }`}
+                ></span>
+                <span className="oled-hw-label">D25:BLE</span>
+              </div>
+
+              {/* Red LED: Urgent Notice Active */}
+              <div className="hw-indicator" title="GPIO 26: Red LED (Urgent Notice)">
+                <span
+                  className={`oled-indicator-led led-red ${hasUrgent ? 'active' : 'idle'}`}
+                ></span>
+                <span className="oled-hw-label">D26:URG</span>
+              </div>
+
+              {/* Passive Buzzer: 2500Hz Alert Indicator */}
+              <div
+                className={`hw-indicator ${buzzerPulsing ? 'buzzer-active' : ''}`}
+                title="GPIO 27: Passive Buzzer (2500Hz Double-Beep every 5s)"
+              >
+                <BellRing
+                  size={11}
+                  className={buzzerPulsing ? 'text-red-pulse' : hasUrgent ? 'text-amber' : 'text-muted'}
+                />
+                <span className="oled-hw-label">
+                  D27:BUZZ {buzzerPulsing ? '(2.5kHz BEEP)' : hasUrgent ? '(5s Int)' : '(OFF)'}
+                </span>
+              </div>
             </div>
-            <span className="oled-screen-spec">0.96" MONOCHROME OLED</span>
+
+            {/* Audio Toggle for browser sound preview */}
+            <button
+              className={`btn-sound-toggle ${audioEnabled ? 'sound-on' : ''}`}
+              onClick={() => setAudioEnabled(!audioEnabled)}
+              title={audioEnabled ? 'Mute 2500Hz Buzzer sound preview' : 'Enable 2500Hz buzzer sound preview'}
+            >
+              {audioEnabled ? <Volume2 size={12} /> : <VolumeX size={12} />}
+              <span>{audioEnabled ? 'AUDIO ON' : 'TEST SOUND'}</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Simulator Control Bar */}
+      {/* Simulator Control Toolbar */}
       <div className="oled-sim-controls">
         <div className="sim-control-group">
-          {/* Pause / Play */}
+          {/* Pause / Play Scrolling */}
           <button
             className={`btn-control-icon ${isPaused ? 'active' : ''}`}
             onClick={() => setIsPaused(!isPaused)}
@@ -279,16 +426,16 @@ export const OledDisplaySimulator = ({
             {isPaused ? <Play size={13} /> : <Pause size={13} />}
           </button>
 
-          {/* Reset Scroll */}
+          {/* Reset Scroll Offsets */}
           <button
             className="btn-control-icon"
-            onClick={() => setScrollOffset(0)}
-            title="Reset Marquee to Start"
+            onClick={() => setScrollOffsets([0, 0, 0, 0])}
+            title="Reset All Lines to Start"
           >
             <RotateCcw size={13} />
           </button>
 
-          {/* Theme Selector */}
+          {/* Theme Palette Dots */}
           <div className="palette-picker">
             <Sparkles size={12} className="text-muted" />
             {Object.keys(themes).map((tKey) => (
@@ -303,34 +450,47 @@ export const OledDisplaySimulator = ({
           </div>
         </div>
 
-        {/* View GATT Packet Inspector */}
-        <button
-          className="btn-text-inspector"
-          onClick={() => setShowPacketInspector(!showPacketInspector)}
-        >
-          <Code2 size={13} />
-          <span>BLE GATT JSON</span>
-          {showPacketInspector ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        </button>
+        <div className="sim-action-group">
+          {/* Sync All Active Notices to ESP32 */}
+          {onSyncAllToBoard && (
+            <button
+              className="btn-sync-all"
+              onClick={onSyncAllToBoard}
+              title="Transmit all active notices to ESP32 priority stack"
+            >
+              <Send size={12} />
+              <span>Sync All to Board ({displayNotices.length})</span>
+            </button>
+          )}
+
+          {/* Packet Inspector Toggle */}
+          <button
+            className="btn-text-inspector"
+            onClick={() => setShowPacketInspector(!showPacketInspector)}
+          >
+            <Code2 size={13} />
+            <span>BLE Payload</span>
+            {showPacketInspector ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+        </div>
       </div>
 
-      {/* Active Notice Quick Selector Dropdown (if multiple exist) */}
+      {/* Active Notice Quick Selector Chips */}
       {activeNoticesList.length > 1 && (
         <div className="quick-notice-selector">
           <span className="selector-label">
-            <Layers size={12} /> Switch Mirror:
+            <Layers size={12} /> Active Notices ({activeNoticesList.length}):
           </span>
           <div className="selector-chips">
-            {activeNoticesList.map((n) => (
+            {displayNotices.map((n, idx) => (
               <button
-                key={n._id || n.title}
-                className={`selector-chip ${
-                  n.title === notice.title ? 'active' : ''
-                }`}
+                key={n._id || idx}
+                className={`selector-chip ${n.priority === 'Urgent' ? 'chip-urgent' : ''}`}
                 onClick={() => onSendToBoard && onSendToBoard(n)}
-                title={n.content}
+                title={`Click to push "${n.title}" to board`}
               >
-                {n.title.length > 18 ? n.title.substring(0, 18) + '...' : n.title}
+                <span className="chip-badge">{n.priority === 'Urgent' ? '!' : n.priority === 'Important' ? '*' : '-'}</span>
+                {n.title.length > 16 ? n.title.substring(0, 16) + '...' : n.title}
               </button>
             ))}
           </div>
@@ -343,19 +503,15 @@ export const OledDisplaySimulator = ({
           <div className="inspector-header">
             <div className="inspector-title">
               <Radio size={13} className="text-cyan" />
-              <span>BLE GATT Characteristic Write Payload (0x2902)</span>
+              <span>GATT Characteristic Sync Packet (128x64 Priority Stack)</span>
             </div>
-            <span className="payload-size">
-              {JSON.stringify(gattPacketPreview).length} bytes
-            </span>
+            <span className="payload-size">{JSON.stringify(gattPacketPreview).length} bytes</span>
           </div>
-          <pre className="inspector-code">
-            {JSON.stringify(gattPacketPreview, null, 2)}
-          </pre>
+          <pre className="inspector-code">{JSON.stringify(gattPacketPreview, null, 2)}</pre>
         </div>
       )}
 
-      {/* Component Styles */}
+      {/* Embedded Component Styles */}
       <style>{`
         .oled-simulator-wrapper {
           display: flex;
@@ -371,6 +527,12 @@ export const OledDisplaySimulator = ({
           padding: 14px 16px 16px 16px;
           box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
           position: relative;
+          transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .oled-hardware-frame.buzzer-pulsing-frame {
+          border-color: rgba(244, 63, 94, 0.7);
+          box-shadow: 0 0 24px rgba(244, 63, 94, 0.35), inset 0 0 12px rgba(244, 63, 94, 0.2);
         }
 
         .oled-pcb-header {
@@ -449,7 +611,7 @@ export const OledDisplaySimulator = ({
         /* Pixel Screen Surface */
         .oled-screen-surface {
           position: relative;
-          height: 160px;
+          height: 165px;
           border-radius: 4px;
           overflow: hidden;
           padding: 6px 8px;
@@ -463,10 +625,7 @@ export const OledDisplaySimulator = ({
         .oled-scanlines {
           position: absolute;
           inset: 0;
-          background: linear-gradient(
-            rgba(18, 16, 16, 0) 50%,
-            rgba(0, 0, 0, 0.35) 50%
-          );
+          background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.35) 50%);
           background-size: 100% 3px;
           pointer-events: none;
           z-index: 10;
@@ -489,7 +648,6 @@ export const OledDisplaySimulator = ({
           display: flex;
           flex-direction: column;
           height: 100%;
-          justify-content: space-between;
           font-family: 'Courier New', Courier, monospace;
         }
 
@@ -512,6 +670,15 @@ export const OledDisplaySimulator = ({
           font-weight: 900;
         }
 
+        .oled-blink-text {
+          animation: textBlink 0.5s infinite;
+        }
+
+        @keyframes textBlink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.2; }
+        }
+
         .oled-header-clock {
           font-size: 9px;
           font-weight: 700;
@@ -522,90 +689,100 @@ export const OledDisplaySimulator = ({
           font-weight: 800;
         }
 
-        /* Zone 1: Title */
-        .oled-zone-title {
-          padding: 4px 0 2px 0;
-          color: var(--oled-color);
-          text-shadow: 0 0 6px var(--oled-glow);
-          font-size: 13px;
-          font-weight: 800;
-          letter-spacing: 0.04em;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .oled-urgent-blink {
-          color: #f43f5e;
-          text-shadow: 0 0 8px #f43f5e;
-          animation: blink 0.6s infinite;
-        }
-
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.2; }
-        }
-
-        /* Dividers */
+        /* Divider */
         .oled-divider {
           height: 1px;
           background: var(--oled-color);
           opacity: 0.45;
           box-shadow: 0 0 3px var(--oled-glow);
-          margin: 1px 0;
+          margin: 3px 0 4px 0;
         }
 
-        /* Zone 3: Marquee */
-        .oled-zone-marquee {
-          overflow: hidden;
-          position: relative;
-          height: 48px;
+        /* Multi-Line Stack Container */
+        .oled-stack-container {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          flex: 1;
+          justify-content: space-around;
+        }
+
+        .oled-stack-row {
           display: flex;
           align-items: center;
+          gap: 6px;
+          height: 26px;
+          border-bottom: 1px dashed rgba(255, 255, 255, 0.1);
+          overflow: hidden;
+          position: relative;
         }
 
-        .oled-marquee-track {
+        .oled-stack-row:last-child {
+          border-bottom: none;
+        }
+
+        /* Fixed Priority Badge on Left */
+        .oled-row-badge {
+          flex-shrink: 0;
+          width: 18px;
+          height: 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 11px;
+          font-weight: 900;
+          border-radius: 2px;
+          z-index: 6;
+        }
+
+        .badge-urgent {
+          background: var(--oled-inv-bg);
+          color: var(--oled-inv-text);
+          box-shadow: 0 0 4px var(--oled-glow);
+        }
+
+        .badge-important {
+          border: 1px solid var(--oled-color);
+          color: var(--oled-color);
+        }
+
+        .badge-normal {
+          color: var(--oled-dim);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        .badge-blink {
+          animation: textBlink 0.5s infinite;
+        }
+
+        /* Horizontal Track Container */
+        .oled-row-track-container {
+          overflow: hidden;
+          flex: 1;
+          display: flex;
+          align-items: center;
+          position: relative;
+        }
+
+        .oled-row-track {
           display: inline-flex;
           align-items: center;
           white-space: nowrap;
           will-change: transform;
         }
 
-        .oled-marquee-text {
-          font-size: 12px;
-          font-weight: 600;
-          color: var(--oled-color);
-          text-shadow: 0 0 5px var(--oled-glow);
-          letter-spacing: 0.05em;
-        }
-
-        .oled-marquee-spacer {
-          margin: 0 24px;
-          color: var(--oled-dim);
-          font-size: 10px;
-        }
-
-        /* Zone 5: Footer */
-        .oled-zone-footer {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          font-size: 9px;
-          color: var(--oled-color);
-          opacity: 0.85;
-          text-shadow: 0 0 4px var(--oled-glow);
-          padding-top: 2px;
-        }
-
-        .oled-footer-cat {
+        .oled-row-text {
+          font-size: 11px;
           font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
+          color: var(--oled-color);
+          text-shadow: 0 0 4px var(--oled-glow);
+          letter-spacing: 0.04em;
         }
 
-        .oled-footer-speed, .oled-footer-res {
-          font-size: 8px;
-          font-weight: 600;
+        .oled-row-spacer {
+          margin: 0 16px;
+          color: var(--oled-dim);
+          font-size: 9px;
         }
 
         /* Bezel Footer */
@@ -620,7 +797,13 @@ export const OledDisplaySimulator = ({
         .oled-status-left {
           display: flex;
           align-items: center;
-          gap: 6px;
+          gap: 12px;
+        }
+
+        .hw-indicator {
+          display: flex;
+          align-items: center;
+          gap: 4px;
         }
 
         .oled-indicator-led {
@@ -628,17 +811,26 @@ export const OledDisplaySimulator = ({
           height: 6px;
           border-radius: 50%;
           background: #475569;
-          transition: all 0.3s;
+          transition: all 0.25s;
         }
 
-        .oled-indicator-led.active {
+        .led-green.active {
           background: #10b981;
           box-shadow: 0 0 8px #10b981;
         }
 
-        .oled-indicator-led.idle {
-          background: #f59e0b;
-          box-shadow: 0 0 5px #f59e0b;
+        .led-green.idle {
+          background: #334155;
+        }
+
+        .led-red.active {
+          background: #f43f5e;
+          box-shadow: 0 0 8px #f43f5e;
+          animation: textBlink 0.5s infinite;
+        }
+
+        .led-red.idle {
+          background: #334155;
         }
 
         .oled-hw-label {
@@ -646,16 +838,46 @@ export const OledDisplaySimulator = ({
           font-size: 9px;
           font-weight: 600;
           color: #94a3b8;
-          letter-spacing: 0.06em;
+          letter-spacing: 0.04em;
         }
 
-        .oled-screen-spec {
-          font-family: var(--font-mono, monospace);
-          font-size: 8px;
-          color: #64748b;
+        .text-red-pulse {
+          color: #f43f5e;
+          animation: pulseIcon 0.3s infinite alternate;
         }
 
-        /* Controls */
+        @keyframes pulseIcon {
+          from { transform: scale(1); filter: drop-shadow(0 0 1px #f43f5e); }
+          to { transform: scale(1.3); filter: drop-shadow(0 0 6px #f43f5e); }
+        }
+
+        .btn-sound-toggle {
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: #94a3b8;
+          padding: 2px 7px;
+          border-radius: 4px;
+          font-size: 9px;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-sound-toggle:hover {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-sound-toggle.sound-on {
+          background: rgba(244, 63, 94, 0.2);
+          border-color: #f43f5e;
+          color: #f43f5e;
+        }
+
+        /* Controls Bar */
         .oled-sim-controls {
           display: flex;
           justify-content: space-between;
@@ -664,9 +886,10 @@ export const OledDisplaySimulator = ({
           border: 1px solid rgba(255, 255, 255, 0.06);
           padding: 6px 10px;
           border-radius: 8px;
+          gap: 8px;
         }
 
-        .sim-control-group {
+        .sim-control-group, .sim-action-group {
           display: flex;
           align-items: center;
           gap: 8px;
@@ -722,6 +945,27 @@ export const OledDisplaySimulator = ({
           box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
         }
 
+        .btn-sync-all {
+          background: linear-gradient(135deg, rgba(0, 240, 255, 0.15) 0%, rgba(14, 165, 233, 0.25) 100%);
+          border: 1px solid rgba(0, 240, 255, 0.4);
+          color: #38bdf8;
+          font-size: 11px;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 4px 10px;
+          border-radius: 5px;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-sync-all:hover {
+          background: linear-gradient(135deg, rgba(0, 240, 255, 0.25) 0%, rgba(14, 165, 233, 0.4) 100%);
+          color: #fff;
+          box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
+        }
+
         .btn-text-inspector {
           background: transparent;
           border: none;
@@ -773,6 +1017,9 @@ export const OledDisplaySimulator = ({
           font-size: 10px;
           cursor: pointer;
           white-space: nowrap;
+          display: flex;
+          align-items: center;
+          gap: 4px;
           transition: all 0.2s;
         }
 
@@ -781,11 +1028,13 @@ export const OledDisplaySimulator = ({
           color: #fff;
         }
 
-        .selector-chip.active {
-          background: rgba(0, 240, 255, 0.15);
-          border-color: rgba(0, 240, 255, 0.35);
-          color: #00f0ff;
-          font-weight: 600;
+        .selector-chip.chip-urgent {
+          border-color: rgba(244, 63, 94, 0.4);
+          color: #f43f5e;
+        }
+
+        .chip-badge {
+          font-weight: 900;
         }
 
         /* Packet Inspector */
@@ -841,4 +1090,3 @@ export const OledDisplaySimulator = ({
     </div>
   );
 };
-

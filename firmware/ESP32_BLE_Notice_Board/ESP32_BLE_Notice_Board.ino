@@ -1,33 +1,3 @@
-/*
- * ===================================================================================
- *  Bluetooth SMART NOTICE BOARD - ESP32 Firmware v5
- *  SSD1306 OLED 128x64 | Header + Priority Stack | LEDC PWM Buzzer (5s Beep-Beep)
- *  Delete-aware BLE sync | Disconnect Persistence | NVS Flash Storage
- * ===================================================================================
- *  Hardware:
- *    - ESP32-WROOM-32 / NodeMCU ESP32
- *    - 0.96" SSD1306 OLED 128x64  (I2C 0x3C, SDA=GPIO21, SCL=GPIO22)
- *    - Green LED  (GPIO 25 -> 330Ohm -> LED -> GND)  : BLE Connected
- *    - Red   LED  (GPIO 26 -> 330Ohm -> LED -> GND)  : Urgent Notice Active
- *    - Buzzer     (GPIO 27 -> Buzzer+, Buzzer- -> GND): Driven via ESP32 LEDC PWM
- *
- *  OLED Layout:
- *    Line 1 (y=0..11):  "Smart Notice Board" header (inverted bar, always shown)
- *    Separator line at y=12
- *    Lines 2+ (y=13..63): Notice rows (up to 4), each with priority badge + scrolling text
- *    When no notices: "No Active Notices" centered in the notice area
- *
- *  NVS Persistence:
- *    - All notices are saved to NVS flash on every add/update/delete/sync
- *    - On power-on or BLE disconnect: notices restore from NVS and stay on screen
- *    - On BLE reconnect: portal pushes a fresh sync which replaces NVS content
- *
- *  Buzzer:
- *    - Uses ledcAttach() and ledcWriteTone() (ESP32 Arduino v3 API)
- *    - Urgent notice active: double-beep (2700 Hz) every 5 seconds, non-blocking
- * ===================================================================================
- */
-
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -38,39 +8,27 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 
-// ═══════════════════════════════════════════════════════════
-//  PIN DEFINITIONS
-// ═══════════════════════════════════════════════════════════
 #define PIN_LED_GREEN  25
 #define PIN_LED_RED    26
-#define PIN_BUZZER     27   // LEDC PWM Buzzer Pin
+#define PIN_BUZZER     27  
 
-// ═══════════════════════════════════════════════════════════
-//  OLED CONFIGURATION
-// ═══════════════════════════════════════════════════════════
 #define SCREEN_WIDTH   128
 #define SCREEN_HEIGHT  64
 #define OLED_RESET     -1
 #define OLED_ADDRESS   0x3C
 
-// Header occupies y=0..11 (12 pixels), separator at y=12
-// Notice area starts at y=14 (50 pixels available for notices)
 #define HEADER_H       12
 #define SEP_Y          12
 #define NOTICE_AREA_Y  14
-#define NOTICE_AREA_H  (SCREEN_HEIGHT - NOTICE_AREA_Y)  // 50px
+#define NOTICE_AREA_H  (SCREEN_HEIGHT - NOTICE_AREA_Y)
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// ═══════════════════════════════════════════════════════════
-//  BLE UUIDS
-// ═══════════════════════════════════════════════════════════
+
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-// ═══════════════════════════════════════════════════════════
-//  GLOBAL STATE
-// ═══════════════════════════════════════════════════════════
+
 Preferences        preferences;
 BLEServer*         pServer         = NULL;
 BLECharacteristic* pCharacteristic = NULL;
@@ -79,9 +37,7 @@ bool deviceConnected    = false;
 bool oldDeviceConnected = false;
 bool urgentActive       = false;
 
-// ═══════════════════════════════════════════════════════════
-//  MULTI-NOTICE DATA (up to 4 on-screen)
-// ═══════════════════════════════════════════════════════════
+
 #define MAX_NOTICES 4
 
 struct NoticeItem {
@@ -101,9 +57,6 @@ int noticeCount = 0;
 unsigned long lastBlinkTime = 0;
 bool          urgentBlink   = false;
 
-// ═══════════════════════════════════════════════════════════
-//  BUZZER ENGINE — LEDC PWM TONE (Double-Beep every 5 sec)
-// ═══════════════════════════════════════════════════════════
 const int           BUZZER_FREQ        = 2700;
 const unsigned long BUZZER_INTERVAL_MS = 5000;
 unsigned long       lastBuzzerCycle    = 0;
@@ -158,17 +111,12 @@ void updateBuzzer() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-//  LED HELPERS
-// ═══════════════════════════════════════════════════════════
 inline void greenLedOn()  { digitalWrite(PIN_LED_GREEN, HIGH); }
 inline void greenLedOff() { digitalWrite(PIN_LED_GREEN, LOW);  }
 inline void redLedOn()    { digitalWrite(PIN_LED_RED,   HIGH); }
 inline void redLedOff()   { digitalWrite(PIN_LED_RED,   LOW);  }
 
-// ═══════════════════════════════════════════════════════════
-//  PRIORITY HELPERS
-// ═══════════════════════════════════════════════════════════
+
 int getPriorityRank(const String& p) {
   if (p == "Urgent")    return 3;
   if (p == "Important") return 2;
@@ -210,9 +158,7 @@ void sortNotices() {
   refreshUrgentState();
 }
 
-// ═══════════════════════════════════════════════════════════
-//  NOTICE CRUD
-// ═══════════════════════════════════════════════════════════
+
 void addOrUpdateNotice(const String& title, const String& content,
                        const String& priority, const String& category, int speed) {
   int idx = -1;
@@ -291,9 +237,7 @@ void clearAllNotices() {
   Serial.println("[NVS] All notices cleared.");
 }
 
-// ═══════════════════════════════════════════════════════════
-//  NVS PERSISTENCE
-// ═══════════════════════════════════════════════════════════
+
 void saveNoticesToNVS() {
   preferences.begin("noticeboard", false);
   preferences.putInt("count", noticeCount);
@@ -329,9 +273,6 @@ void loadNoticesFromNVS() {
   Serial.println("[NVS] Loaded " + String(noticeCount) + " notice(s) from flash.");
 }
 
-// ═══════════════════════════════════════════════════════════
-//  BLE SERVER CALLBACKS
-// ═══════════════════════════════════════════════════════════
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* pSrv) override {
     deviceConnected = true;
@@ -348,9 +289,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
   }
 };
 
-// ═══════════════════════════════════════════════════════════
-//  BLE CHARACTERISTIC WRITE CALLBACK
-// ═══════════════════════════════════════════════════════════
+
 class NoticeCharacteristicCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pChar) override {
     String rxValue = pChar->getValue().c_str();
@@ -413,20 +352,12 @@ class NoticeCharacteristicCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-// ═══════════════════════════════════════════════════════════
-//  OLED RENDERING — v5 Layout
-//  Line 1: "Smart Notice Board" header (inverted bar, y=0..11)
-//  Separator at y=12
-//  Notice rows from y=14 downward (50px for up to 4 notices)
-//  - If no notices: centered "No Active Notices" in the notice area
-// ═══════════════════════════════════════════════════════════
+
 void drawHeader() {
-  // Inverted full-width bar for header
   display.fillRect(0, 0, SCREEN_WIDTH, HEADER_H, WHITE);
   display.setTextColor(BLACK);
   display.setTextSize(1);
 
-  // Center "Smart Notice Board" (17 chars * 6px = 102px wide)
   int textW = 17 * 6;  // approximate
   int x = (SCREEN_WIDTH - textW) / 2;
   display.setCursor(x < 0 ? 0 : x, 2);
@@ -434,7 +365,6 @@ void drawHeader() {
 
   display.setTextColor(WHITE);
 
-  // Separator line
   display.drawFastHLine(0, SEP_Y, SCREEN_WIDTH, WHITE);
 }
 
@@ -444,41 +374,34 @@ void renderOLED() {
 
   unsigned long now = millis();
 
-  // ── Header (always shown) ───────────────────────────────
   drawHeader();
 
-  // ── Blink toggle every 500ms for urgent badge ───────────
   if (now - lastBlinkTime >= 500) {
     lastBlinkTime = now;
     urgentBlink   = !urgentBlink;
   }
 
-  // ── Notice Area ─────────────────────────────────────────
   if (noticeCount == 0) {
-    // Empty state: centered message in notice area
     display.setTextColor(WHITE);
     display.setTextSize(1);
-    // "No Active Notices" = 18 chars * 6 = 108px
     display.setCursor(10, NOTICE_AREA_Y + (NOTICE_AREA_H - 8) / 2 - 4);
     display.print("No Active Notices");
     display.setCursor(28, NOTICE_AREA_Y + (NOTICE_AREA_H - 8) / 2 + 8);
     display.print(deviceConnected ? "BLE Connected" : "BLE Disconnected");
   } else {
     int rows  = min(noticeCount, MAX_NOTICES);
-    int rowH  = NOTICE_AREA_H / rows;        // height per row in notice area
+    int rowH  = NOTICE_AREA_H / rows;
     int badgeW = 14;
     int textX  = badgeW + 3;
     int textW  = SCREEN_WIDTH - textX;
 
     for (int i = 0; i < rows; i++) {
-      // Row Y offset is relative to notice area start
       int rowBaseY = NOTICE_AREA_Y + i * rowH;
-      int rowY     = rowBaseY + (rowH - 8) / 2;  // vertically centre the 8px text
+      int rowY     = rowBaseY + (rowH - 8) / 2; 
 
       String fullText = notices[i].title + ": " + notices[i].message;
       int    fPx      = notices[i].textPixelWidth;
 
-      // Side-scrolling text
       if (fPx <= textW) {
         display.setCursor(textX, rowY);
         display.print(fullText);
@@ -492,7 +415,6 @@ void renderOLED() {
         display.print(fullText + "    ***    " + fullText);
       }
 
-      // Mask badge area, then draw badge
       display.fillRect(0, rowBaseY, badgeW + 1, rowH, BLACK);
 
       if (notices[i].priority == "Urgent") {
@@ -516,7 +438,6 @@ void renderOLED() {
         display.print("-");
       }
 
-      // Row divider (not after last row)
       if (i < rows - 1) {
         display.drawFastHLine(0, rowBaseY + rowH - 1, SCREEN_WIDTH, WHITE);
       }
@@ -526,9 +447,7 @@ void renderOLED() {
   display.display();
 }
 
-// ═══════════════════════════════════════════════════════════
-//  SETUP
-// ═══════════════════════════════════════════════════════════
+
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -599,13 +518,11 @@ void setup() {
   BLEAdvertising* pAdv = BLEDevice::getAdvertising();
   pAdv->addServiceUUID(SERVICE_UUID);
 
-  // Advertisement packet: Flags + Service UUID (stays within 31 bytes)
   BLEAdvertisementData oAdvData;
   oAdvData.setFlags(0x06);
   oAdvData.setCompleteServices(BLEUUID(SERVICE_UUID));
   pAdv->setAdvertisementData(oAdvData);
 
-  // Scan response: Full device name
   BLEAdvertisementData oScanRespData;
   oScanRespData.setName("ESP32-Smart-Notice-Board");
   pAdv->setScanResponseData(oScanRespData);
@@ -616,11 +533,8 @@ void setup() {
   Serial.println("[BLE] Advertising as 'ESP32-Smart-Notice-Board'.");
 }
 
-// ═══════════════════════════════════════════════════════════
-//  MAIN LOOP
-// ═══════════════════════════════════════════════════════════
+
 void loop() {
-  // Restart advertising after disconnect so portal can reconnect
   if (!deviceConnected && oldDeviceConnected) {
     delay(150);
     pServer->startAdvertising();
@@ -631,9 +545,7 @@ void loop() {
     oldDeviceConnected = true;
   }
 
-  // Non-blocking urgent buzzer state machine
   updateBuzzer();
 
-  // Render OLED: header + notice stack
   renderOLED();
 }

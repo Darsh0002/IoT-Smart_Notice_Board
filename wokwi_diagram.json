@@ -1,0 +1,196 @@
+{
+  "version": 1,
+  "author": "SmartNotice Project",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-breadboard",
+      "id": "bb",
+      "top": 50,
+      "left": -60,
+      "attrs": {}
+    },
+    {
+      "type": "board-esp32-devkit-c-v4",
+      "id": "esp",
+      "top": -270,
+      "left": -20,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": -270,
+      "left": 280,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r_green",
+      "top": 125,
+      "left": 60,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_green",
+      "top": 110,
+      "left": 180,
+      "attrs": {
+        "color": "green"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r_red",
+      "top": 205,
+      "left": 60,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_red",
+      "top": 190,
+      "left": 180,
+      "attrs": {
+        "color": "red"
+      }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 280,
+      "left": 130,
+      "attrs": {
+        "hasVisualizer": "1"
+      }
+    }
+  ],
+  "connections": [
+    [
+      "esp:3V3",
+      "oled:VCC",
+      "red",
+      [
+        "v-35",
+        "h245"
+      ]
+    ],
+    [
+      "esp:GND.2",
+      "oled:GND",
+      "black",
+      [
+        "v-20",
+        "h150"
+      ]
+    ],
+    [
+      "esp:22",
+      "oled:SCL",
+      "gold",
+      [
+        "v-5",
+        "h120"
+      ]
+    ],
+    [
+      "esp:21",
+      "oled:SDA",
+      "blue",
+      [
+        "v15",
+        "h165"
+      ]
+    ],
+    [
+      "esp:25",
+      "r_green:1",
+      "green",
+      [
+        "v55",
+        "h10"
+      ]
+    ],
+    [
+      "r_green:2",
+      "led_green:A",
+      "green",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "led_green:C",
+      "bb:tp.1",
+      "black",
+      [
+        "v30",
+        "h-140"
+      ]
+    ],
+    [
+      "esp:26",
+      "r_red:1",
+      "purple",
+      [
+        "v75",
+        "h-25",
+        "v115"
+      ]
+    ],
+    [
+      "r_red:2",
+      "led_red:A",
+      "purple",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "led_red:C",
+      "bb:tp.5",
+      "black",
+      [
+        "v30",
+        "h-140"
+      ]
+    ],
+    [
+      "esp:27",
+      "bz1:2",
+      "orange",
+      [
+        "v95",
+        "h-45",
+        "v215",
+        "h140"
+      ]
+    ],
+    [
+      "bz1:1",
+      "bb:tp.9",
+      "black",
+      [
+        "v40",
+        "h-90"
+      ]
+    ],
+    [
+      "esp:GND.1",
+      "bb:tp.13",
+      "black",
+      [
+        "v20",
+        "h-40",
+        "v150"
+      ]
+    ]
+  ]
+}

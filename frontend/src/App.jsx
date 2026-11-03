@@ -351,13 +351,18 @@ export default function App() {
     }
   };
 
-  // ── Silent Auto-Delete when expiry time is reached ──────────────────────
-  // Runs every 60 seconds. Finds notices that were active but have now passed
-  // their expiresAt. Deletes them from DB + syncs OLED — same as clicking
-  // Delete, but with NO window.confirm so it fires silently in the background.
+  // ── Track already-processed expired IDs to prevent infinite loops ────────
+  const processedExpiredIdsRef = React.useRef(new Set());
+
+  // ── Silent Auto-Delete / Auto-Remove when expiry time is reached ─────────
+  // Finds notices that were active but have now reached expiresAt.
+  // Triggers the exact same hardware OLED removal as clicking the Delete button!
   const silentDeleteExpired = React.useCallback(async (id, title) => {
+    if (processedExpiredIdsRef.current.has(id)) return;
+    processedExpiredIdsRef.current.add(id);
+
     try {
-      await api.deleteNotice(id);
+      // 1. Remove from ESP32 hardware OLED via BLE immediately (same as delete button)
       if (bleState.isConnected) {
         try {
           await ble.deleteNoticeFromBoard(title);
@@ -371,19 +376,23 @@ export default function App() {
           );
           await ble.syncAllNotices(remaining);
         } catch (bleErr) {
-          console.warn('[BLE] Silent expiry sync failed:', bleErr.message);
+          console.warn('[BLE] Expiry removal from OLED failed:', bleErr.message);
         }
       }
-      showToast(`Expired & auto-removed from board: "${title}"`, 'info');
+
+      // 2. If authenticated admin, also delete from DB; otherwise backend cron handles DB
+      if (user) {
+        await api.deleteNotice(id);
+      }
+
+      showToast(`Notice expired & removed from board: "${title}"`, 'info');
       await fetchData();
     } catch (err) {
-      console.warn('[AutoExpiry] Failed to delete expired notice:', err.message);
+      console.warn('[AutoExpiry] Error processing expired notice:', err.message);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bleState.isConnected]);
+  }, [bleState.isConnected, notices, user]);
 
-  // 60-second expiry watcher — triggers silentDeleteExpired for any notice
-  // whose expiresAt has passed. Also runs once immediately on mount.
+  // Periodic 15-second expiry watcher
   useEffect(() => {
     const checkExpired = () => {
       const now = new Date();
@@ -391,16 +400,17 @@ export default function App() {
         if (
           n.status === 'active' &&
           n.expiresAt &&
-          new Date(n.expiresAt) <= now
+          new Date(n.expiresAt) <= now &&
+          !processedExpiredIdsRef.current.has(n._id)
         ) {
-          console.log('[AutoExpiry] Deleting expired notice:', n.title);
+          console.log('[AutoExpiry] Expiry time met, removing from board:', n.title);
           silentDeleteExpired(n._id, n.title);
         }
       });
     };
-    // Run immediately, then every 60 seconds
+
+    const expireTimer = setInterval(checkExpired, 15 * 1000);
     checkExpired();
-    const expireTimer = setInterval(checkExpired, 60 * 1000);
     return () => clearInterval(expireTimer);
   }, [notices, silentDeleteExpired]);
 
@@ -488,12 +498,17 @@ export default function App() {
             }
           />
 
-          {/* Protected Admin Dashboard Route: Strictly redirects to '/' if not logged in */}
+          {/* Admin / Public Dashboard Route */}
           <Route
             path="/dashboard"
             element={
-              !authLoading && !user ? (
-                <Navigate to="/" replace />
+              authLoading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh', color: '#00f0ff' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ width: '28px', height: '28px', border: '3px solid rgba(0, 240, 255, 0.2)', borderTopColor: '#00f0ff', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                    <span style={{ fontSize: '0.9rem', letterSpacing: '0.05em' }}>Loading Dashboard...</span>
+                  </div>
+                </div>
               ) : (
                 <>
                   {/* Top Metric Cards */}

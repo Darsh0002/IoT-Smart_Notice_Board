@@ -33,6 +33,8 @@ export const NoticeCard = ({
   const scheduledDate = notice.scheduledFor ? new Date(notice.scheduledFor) : null;
   const isExpired = expiryDate < now || notice.status === 'expired';
   const isScheduled = (scheduledDate && scheduledDate > now) || notice.status === 'scheduled';
+  // Notice is truly active and live on board if not expired, not scheduled-for-future, and status is active
+  const isLiveOnBoard = !isExpired && !isScheduled && notice.status === 'active';
 
   const getTimeRemaining = () => {
     if (isExpired) return 'Expired';

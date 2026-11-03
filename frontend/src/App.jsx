@@ -351,6 +351,59 @@ export default function App() {
     }
   };
 
+  // ── Silent Auto-Delete when expiry time is reached ──────────────────────
+  // Runs every 60 seconds. Finds notices that were active but have now passed
+  // their expiresAt. Deletes them from DB + syncs OLED — same as clicking
+  // Delete, but with NO window.confirm so it fires silently in the background.
+  const silentDeleteExpired = React.useCallback(async (id, title) => {
+    try {
+      await api.deleteNotice(id);
+      if (bleState.isConnected) {
+        try {
+          await ble.deleteNoticeFromBoard(title);
+          const nowNow = new Date();
+          const remaining = notices.filter(
+            (n) =>
+              n._id !== id &&
+              n.status === 'active' &&
+              (!n.scheduledFor || new Date(n.scheduledFor) <= nowNow) &&
+              (!n.expiresAt || new Date(n.expiresAt) > nowNow)
+          );
+          await ble.syncAllNotices(remaining);
+        } catch (bleErr) {
+          console.warn('[BLE] Silent expiry sync failed:', bleErr.message);
+        }
+      }
+      showToast(`Expired & auto-removed from board: "${title}"`, 'info');
+      await fetchData();
+    } catch (err) {
+      console.warn('[AutoExpiry] Failed to delete expired notice:', err.message);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bleState.isConnected]);
+
+  // 60-second expiry watcher — triggers silentDeleteExpired for any notice
+  // whose expiresAt has passed. Also runs once immediately on mount.
+  useEffect(() => {
+    const checkExpired = () => {
+      const now = new Date();
+      notices.forEach((n) => {
+        if (
+          n.status === 'active' &&
+          n.expiresAt &&
+          new Date(n.expiresAt) <= now
+        ) {
+          console.log('[AutoExpiry] Deleting expired notice:', n.title);
+          silentDeleteExpired(n._id, n.title);
+        }
+      });
+    };
+    // Run immediately, then every 60 seconds
+    checkExpired();
+    const expireTimer = setInterval(checkExpired, 60 * 1000);
+    return () => clearInterval(expireTimer);
+  }, [notices, silentDeleteExpired]);
+
   // Active notices list for OLED mirror
   const nowTime = new Date();
   const activeNotices = notices.filter(

@@ -72,9 +72,10 @@ export const NoticeCard = ({
 
   return (
     <div
-      className={`glass-panel notice-card ${
+      className={`glass-panel notice-card ${isLiveOnBoard ? 'notice-active-live' : ''} ${
         isCurrentlyDisplayed ? 'currently-displayed' : ''
-      } ${isUrgent ? 'border-urgent' : isImportant ? 'border-important' : ''}`}
+      } ${isUrgent ? 'border-urgent' : isImportant ? 'border-important' : ''} ${
+        isExpired ? 'notice-expired-dim' : ''}`}
     >
       {/* Notice Card Header */}
       <div className="card-header">
@@ -107,8 +108,14 @@ export const NoticeCard = ({
         </div>
 
         {/* Sync Status Badge */}
-        {notice.isSyncedToDevice && (
-          <div className="synced-badge" title="Synced to ESP32 OLED Display">
+        {isLiveOnBoard && (
+          <div className="synced-badge live-board-badge" title="Currently active on the ESP32 OLED board">
+            <Radio size={12} className="pulse-icon" />
+            <span>Live on Board</span>
+          </div>
+        )}
+        {!isLiveOnBoard && notice.isSyncedToDevice && (
+          <div className="synced-badge" title="Previously synced to ESP32 OLED Display">
             <CheckCircle2 size={13} className="text-cyan" />
             <span>On OLED</span>
           </div>
@@ -145,19 +152,24 @@ export const NoticeCard = ({
       <div className="card-actions">
         {/* Send to OLED Board */}
         <button
-          className={`btn-send-board ${isCurrentlyDisplayed ? 'active-display' : ''}`}
+          className={`btn-send-board ${isLiveOnBoard ? 'active-display' : ''} ${isExpired ? 'expired-btn' : ''}`}
           onClick={handlePushClick}
           title={isAdmin ? 'Display notice on ESP32 OLED' : 'Admin Login Required'}
         >
-          {isCurrentlyDisplayed ? (
+          {isLiveOnBoard ? (
             <>
               <Radio size={13} className="pulse-icon" />
-              <span>Live on Board</span>
+              <span>{isCurrentlyDisplayed ? 'Selected on Board' : 'Sync to Board'}</span>
             </>
           ) : isScheduled ? (
             <>
               <Calendar size={13} />
               <span>Push to Board Now</span>
+            </>
+          ) : isExpired ? (
+            <>
+              <Send size={13} />
+              <span>Re-post Notice</span>
             </>
           ) : (
             <>
@@ -204,10 +216,34 @@ export const NoticeCard = ({
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
         }
 
+        /* Active live — distinct per-priority glow */
+        .notice-card.notice-active-live {
+          border-color: rgba(0, 240, 255, 0.35);
+          background: rgba(0, 240, 255, 0.04);
+        }
+
+        .notice-card.notice-active-live.border-urgent {
+          border-color: rgba(244, 63, 94, 0.55);
+          background: rgba(244, 63, 94, 0.05);
+          box-shadow: 0 0 20px rgba(244, 63, 94, 0.13), inset 0 0 14px rgba(244, 63, 94, 0.04);
+        }
+
+        .notice-card.notice-active-live.border-important {
+          border-color: rgba(245, 158, 11, 0.55);
+          background: rgba(245, 158, 11, 0.04);
+          box-shadow: 0 0 18px rgba(245, 158, 11, 0.1), inset 0 0 12px rgba(245, 158, 11, 0.03);
+        }
+
         .notice-card.currently-displayed {
-          border-color: var(--accent-cyan);
-          box-shadow: 0 0 20px rgba(0, 240, 255, 0.2), inset 0 0 16px rgba(0, 240, 255, 0.05);
-          background: rgba(16, 24, 42, 0.85);
+          outline: 1.5px solid rgba(0, 240, 255, 0.6);
+          box-shadow: 0 0 26px rgba(0, 240, 255, 0.25), inset 0 0 16px rgba(0, 240, 255, 0.06);
+        }
+
+        /* Expired notices are visually dimmed */
+        .notice-card.notice-expired-dim {
+          opacity: 0.5;
+          background: rgba(15, 20, 35, 0.45);
+          border-color: rgba(255, 255, 255, 0.05);
         }
 
         .notice-card.border-urgent {
@@ -245,6 +281,33 @@ export const NoticeCard = ({
           padding: 2px 8px;
           border-radius: 12px;
         }
+
+        /* Live on Board badge — green pulsing for normal/high, red for urgent, amber for important */
+        .live-board-badge {
+          color: #4ade80;
+          background: rgba(74, 222, 128, 0.1);
+          border-color: rgba(74, 222, 128, 0.35);
+          animation: livePulse 2.5s ease-in-out infinite;
+        }
+
+        .notice-card.notice-active-live.border-urgent .live-board-badge {
+          color: #fb7185;
+          background: rgba(251, 113, 133, 0.12);
+          border-color: rgba(251, 113, 133, 0.4);
+        }
+
+        .notice-card.notice-active-live.border-important .live-board-badge {
+          color: #fbbf24;
+          background: rgba(251, 191, 36, 0.12);
+          border-color: rgba(251, 191, 36, 0.4);
+        }
+
+        @keyframes livePulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.55; }
+        }
+
+        .expired-btn { opacity: 0.55; }
 
         .card-title {
           font-size: 15px;

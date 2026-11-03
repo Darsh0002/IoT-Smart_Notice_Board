@@ -103,7 +103,7 @@ export const AuditHistory = ({ isOpen, onClose, onReSendNotice }) => {
         <div className="history-list">
           {logs.length > 0 ? (
             logs.map((log) => (
-              <div key={log._id} className="history-item">
+              <div key={log._id} className="history-item" data-action={log.action}>
                 <div className="history-item-top">
                   <div className="item-meta-left">
                     {getActionBadge(log.action)}
